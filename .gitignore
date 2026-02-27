@@ -208,3 +208,8 @@ __marimo__/
 
 .DS_Store
 data
+
+# Track only source files for the proposal document.
+documents/proposal/**
+!documents/proposal/main.tex
+!documents/proposal/main.bib

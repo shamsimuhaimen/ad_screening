@@ -1,0 +1,84 @@
+\documentclass{article}
+
+% Language setting
+\usepackage[english]{babel}
+
+% Set page size and margins
+\usepackage[letterpaper,top=2cm,bottom=2cm,left=2cm,right=2cm,marginparwidth=1.75cm]{geometry}
+
+% Useful packages
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage[colorlinks=true, allcolors=blue]{hyperref}
+
+\title{Letter of Intent}
+\author{Eunice Chen, Muhaimen Shamsi, Dariia Kucheruk, Oleksii Nakhod}
+
+\begin{document}
+\maketitle
+
+\section{Research Question}
+Which AD-linked genes are unusually active in the brain regions most affected by AD,
+and how can we combine region and cell-type evidence to rank the best genes to test next?
+
+\section{Significance}
+Many AD-associated genes emerge from GWAS and TWAS, but translating association into mechanism remains difficult
+because disease risk does not directly reveal where in the brain genes act \cite{lambert2013, disgenet2023}.
+Focusing on anatomically vulnerable regions (hippocampus, entorhinal cortex, and temporal cortex) can bridge this gap \cite{adRegion2019, adRegion2022}. 
+A region-anchored prioritization framework can generate actionable targets by identifying genes with convergent genetic evidence and biologically plausible spatial context.
+
+\section{Current State of the Field}
+Existing AD gene-prioritization strategies often rely on genetic significance, pathway enrichment, or network centrality, with limited explicit modeling of regional vulnerability \cite{adNetwork2026}. Public transcriptomic atlases now allow this missing link to be addressed directly. Allen Brain Atlas bulk transcriptomics provides broad regional coverage \cite{allenAtlas2012}, while SEA-AD adds region- and cell-type-resolved expression in human aging and AD-relevant tissue \cite{seaad2024, seaadPreprint2025}.
+
+\section{Existing Models}
+Most current models prioritize genes using one of three approaches:
+\begin{itemize}
+\item Genetic-only ranking (e.g., p-values, colocalization scores, TWAS z-scores).
+\item Network/pathway methods that may not encode anatomical specificity.
+\item Cell-type enrichment methods that can miss regional vulnerability structure.
+\end{itemize}
+We propose a focused Aim 1 framework that explicitly combines these elements through a continuous, region-aware expression score.
+
+\section{Available Datasets}
+\begin{itemize}
+\item \textbf{Allen Brain Atlas bulk transcriptomics}: baseline regional expression profiles across human brain regions \cite{allenAtlas2012}.
+\item \textbf{SEA-AD}: region- and cell-type--resolved expression for relevant cortical tissue, used when available to refine regional signals and capture cell-type specificity \cite{seaad2024, seaadPreprint2025}.
+\item \textbf{AD genetic evidence resources}: GWAS/TWAS-derived implicated genes and summary evidence scores for integration \cite{lambert2013, adGwas2025}.
+\end{itemize}
+
+\section{Data Generation}
+No new wet-lab data will be generated in this LOI phase. We will generate derived computational outputs:
+\begin{itemize}
+\item A continuous \textbf{RegionScore} for each gene in each vulnerable brain region.
+\item Region-specific and cell-type--refined expression summaries.
+\item An integrated prioritization score combining RegionScore with AD genetic evidence.
+\end{itemize}
+
+\section{Project Overview}
+
+For each vulnerable brain region, we will compute a continuous \textbf{RegionScore} per gene using Allen Brain Atlas bulk transcriptomics and, where available, SEA-AD region- and cell-type--resolved expression. We will then prioritize AD-implicated genes (GWAS/TWAS) by integrating genetic evidence with anatomical and cell-type specificity.
+
+\textbf{Planned workflow}
+\begin{enumerate}
+\item Define vulnerable brain regions from the AD literature and harmonize region labels across datasets.
+\item Compute gene-level RegionScore from Allen regional bulk expression.
+\item Refine RegionScore using SEA-AD region- and cell-type--resolved expression where data are available.
+\item Aggregate AD genetic evidence (GWAS/TWAS) for implicated genes.
+\item Integrate genetic evidence with RegionScore to produce a ranked candidate list.
+\item Perform sensitivity analyses to assess robustness to weighting and dataset availability.
+\end{enumerate}
+
+\textbf{Primary deliverables}
+\begin{itemize}
+\item Ranked list of AD-implicated genes with integrated prioritization scores.
+\item Per-region and per-cell-type evidence tables supporting each prioritized gene.
+\item Reproducible analysis code and documentation for extension to downstream aims.
+\end{itemize}
+
+\section{Impact and Applications}
+This focused Aim 1 effort will produce a practical, biologically grounded shortlist of AD genes linked to vulnerable anatomy and relevant cell types. The resulting ranked candidates can guide experimental validation, target selection, and subsequent modeling efforts while avoiding over-expansion into broader multi-aim scope at this stage.
+
+\bibliographystyle{unsrturl}
+\bibliography{main}
+
+\end{document}
