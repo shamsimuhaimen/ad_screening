@@ -1,0 +1,100 @@
+\documentclass{article}
+
+% Language setting
+\usepackage[english]{babel}
+
+% Set page size and margins
+\usepackage[letterpaper,top=2cm,bottom=2cm,left=2cm,right=2cm,marginparwidth=1.75cm]{geometry}
+
+% Useful packages
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage[colorlinks=true, allcolors=blue]{hyperref}
+
+\title{Letter of Intent}
+\author{Eunice Chen, Muhaimen Shamsi, Dariia Kucheruk, Oleksii Nakhod}
+
+\begin{document}
+\maketitle
+
+\section{Research Question}
+Do embedding-derived similarities from DrugCLIP recover known brain disease modules
+or protein-protein interaction (PPI) subnetworks?
+
+\section{Significance}
+DrugCLIP works well for virtual screening at scale \cite{adGwas2025}. The open question is whether its embeddings capture useful disease biology, not just screening signals. We test this with a network medicine lens \cite{aiNetworkMedicine2025}: if two proteins are close in embedding space, do they also sit in the same disease-relevant part of the PPI graph? A positive result means DrugCLIP embeddings contain mechanistic signal that can help prioritize targets in a biologically grounded way. For example, if a lesser-studied protein repeatedly appears in embedding neighborhoods and PPI subnetworks around established AD genes, it can be promoted above equally significant but network-isolated candidates for follow-up.
+
+\section{Current State of the Field}
+Most embedding papers report task metrics (for example enrichment in screening benchmarks). Network medicine papers, on the other hand, evaluate disease modules and graph proximity in PPI networks \cite{string2018, string2019}. What is missing is a direct bridge between these two: evaluate DrugCLIP embeddings by asking whether they recover known brain disease modules.
+
+\section{Existing Models}
+Current approaches can be grouped as:
+\begin{itemize}
+    \item \textbf{Task-focused embedding models} optimized for virtual screening performance \cite{adGwas2025}.
+    \item \textbf{Network medicine methods} based on disease gene sets and PPI proximity \cite{string2018}.
+    \item \textbf{Expression-centric approaches} using region or cell-type profiles \cite{allenAtlas2012, seaad2024}.
+\end{itemize}
+Our project does one thing clearly: check whether DrugCLIP embedding similarity agrees with known disease network structure.
+
+\section{Available Datasets}
+\begin{itemize}
+    \item \textbf{DrugCLIP protein embeddings}: pretrained vectors for proteins from published DrugCLIP resources \cite{adGwas2025, drugclipData2024}.
+    \item \textbf{Curated disease genes}: trusted brain-disease gene sets used as reference positives \cite{disgenet2023}.
+    \item \textbf{PPI network}: high-confidence protein interaction graph used for module and proximity tests \cite{string2018, string2019}.
+    \item \textbf{Optional region metadata}: Allen/SEA-AD annotations for follow-up stratification \cite{allenAtlas2012, seaad2024}.
+\end{itemize}
+
+\section{Data Generation}
+No new wet-lab data will be generated in this LOI phase. We will generate derived computational outputs:
+\begin{itemize}
+    \item Embedding-based protein similarity graph.
+    \item Quantitative module recovery scores.
+    \item PPI proximity scores to known disease genes.
+    \item Ranked candidate proteins supported by both embedding and network evidence.
+\end{itemize}
+
+\section{Project Overview}
+
+We use a simple pipeline that is easy to audit and explain.
+
+\textbf{Planned workflow}
+\begin{enumerate}
+    \item \textbf{Map IDs across resources.} DrugCLIP, PPI, and disease resources use different identifier systems (for example UniProt IDs versus gene symbols). We first create a single crosswalk table so the same biological entity is represented consistently across all inputs. This step is critical because all downstream network joins depend on it; even a small mismatch rate can create false negatives or artificial sparsity.
+    \item \textbf{Build an embedding similarity graph.} We represent each protein as a node and connect it to its top-$k$ nearest neighbors by cosine similarity in embedding space. The result is a kNN graph that converts high-dimensional vectors into a structure we can inspect and test directly. This graph is our operational definition of ``embedding-derived similarity'' and enables module and proximity analyses.
+    \item \textbf{Create seed neighborhoods.} We treat known disease genes as seed nodes, then collect their local embedding neighborhoods (1-hop; optionally 2-hop for sensitivity checks). This gives us per-seed candidate sets that can be compared against known disease biology. The neighborhood view is useful because it translates abstract embedding distances into interpretable local subnetworks.
+    \item \textbf{Test module recovery.} For each seed neighborhood, we measure overlap with known disease-module genes and compute enrichment statistics versus a null model. The key question is whether embedding neighborhoods contain more disease-module genes than expected by chance. If they do, the embedding is likely capturing disease-relevant structure rather than generic protein similarity.
+    \item \textbf{Test PPI proximity.} We map embedding-prioritized proteins onto the PPI graph and compute their distance to known disease genes (for example shortest-path or random-walk based proximity). We then compare this proximity to baseline sets. This checks whether embedding-prioritized proteins are not only similar in vector space but also biologically close to disease mechanisms in an independent network.
+\end{enumerate}
+
+\textbf{Minimum controls and stress tests}
+
+\textbf{Control 1: Label-shuffle test.}
+We randomly permute disease labels while keeping graph structure fixed, then rerun the same module-recovery and proximity analyses. The purpose is to test whether the observed signal depends on true disease assignments. If performance remains high after shuffling, the original result is likely an artifact; if performance collapses, it supports disease-specific signal in the embeddings.
+
+\textbf{Control 2: Random-embedding baseline.}
+We replace DrugCLIP vectors with random vectors of the same dimension and scale, rebuild the kNN graph, and rerun all metrics. This establishes a floor for what purely geometric chance can produce. DrugCLIP should outperform this baseline clearly; otherwise, the claimed biological structure is not stronger than random embedding geometry.
+
+\textbf{Control 3: Degree-matched random neighborhood baseline.}
+For each seed, we sample random protein sets matched to neighborhood size (and matched degree distribution in the PPI graph), then compute the same overlap and proximity metrics. This prevents inflated performance due to hub bias and graph topology effects. It is a fairer baseline than uniform random sampling and is the main null model for significance testing.
+
+\textbf{Stress test 1: kNN sensitivity sweep.}
+We vary $k$ (for example 10, 25, 50) when constructing the embedding graph and check metric stability. Small $k$ can be too sparse; large $k$ can wash out local structure. A robust result should keep the same qualitative conclusion across a reasonable $k$ range.
+
+\textbf{Stress test 2: PPI confidence-threshold sweep.}
+We rerun analyses across multiple PPI confidence cutoffs (for example medium and high confidence edges only). This tests whether findings depend on noisy edges in the interaction graph. If conclusions hold under stricter PPI filtering, confidence in biological relevance increases.
+
+\textbf{Primary deliverables}
+\begin{itemize}
+    \item Metric table comparing DrugCLIP to baselines and controls.
+    \item Clear graph visualizations (embedding neighborhoods + PPI overlap).
+    \item Ranked list of candidate proteins with evidence columns.
+    \item Reproducible code and compact error analysis.
+\end{itemize}
+
+\section{Impact and Applications}
+If the answer is yes, we get evidence that DrugCLIP embeddings carry disease-mechanistic structure and can be used for network-informed target discovery. If the answer is no, we still learn something useful: current embeddings are not enough for this use case, and explicit network or spatial conditioning should be added next.
+
+\bibliographystyle{unsrturl}
+\bibliography{loi}
+
+\end{document}

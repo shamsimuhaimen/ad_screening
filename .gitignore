@@ -209,7 +209,8 @@ __marimo__/
 .DS_Store
 data
 
-# Track only source files for the proposal document.
-documents/proposal/**
-!documents/proposal/main.tex
-!documents/proposal/main.bib
+# Under documents/, ignore everything except TeX and BibTeX sources.
+documents/**
+!documents/**/
+!documents/**/*.tex
+!documents/**/*.bib
