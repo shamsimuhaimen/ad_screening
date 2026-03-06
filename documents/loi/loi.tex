@@ -10,6 +10,7 @@
 \usepackage{amsmath}
 \usepackage{graphicx}
 \usepackage[colorlinks=true, allcolors=blue]{hyperref}
+\setlength{\parindent}{0pt}
 
 \title{Letter of Intent}
 \author{Eunice Chen, Muhaimen Shamsi, Dariia Kucheruk, Oleksii Nakhod}
@@ -18,14 +19,15 @@
 \maketitle
 
 \section{Research Question}
-Do embedding-derived similarities from DrugCLIP recover known brain disease modules
-or protein-protein interaction (PPI) subnetworks?
+Do AD-implicated genes (from AD GWAS/TWAS) show the strongest and most specific
+signals in AD-vulnerable brain regions and related network neighborhoods, compared
+with matched non-AD control genes?
 
 \section{Significance}
-DrugCLIP works well for virtual screening at scale \cite{adGwas2025}. The open question is whether its embeddings capture useful disease biology, not just screening signals. We test this with a network medicine lens \cite{aiNetworkMedicine2025}: if two proteins are close in embedding space, do they also sit in the same disease-relevant part of the PPI graph? A positive result means DrugCLIP embeddings contain mechanistic signal that can help prioritize targets in a biologically grounded way. For example, if a lesser-studied protein repeatedly appears in embedding neighborhoods and PPI subnetworks around established AD genes, it can be promoted above equally significant but network-isolated candidates for follow-up.
+DrugCLIP works well for virtual screening at scale \cite{adGwas2025}. The open question is whether its embeddings capture AD-relevant biology, not just generic screening signal. We therefore focus disease inputs strictly on AD-implicated genes and test whether they are enriched in AD-vulnerable regions (entorhinal cortex, hippocampus, and temporal cortex) and nearby PPI neighborhoods \cite{aiNetworkMedicine2025}. We also include a matched non-AD control gene set and run the exact same scoring pipeline to test specificity. A positive result means the signal is AD-specific and biologically grounded, which can improve target prioritization.
 
 \section{Current State of the Field}
-Most embedding papers report task metrics (for example enrichment in screening benchmarks). Network medicine papers, on the other hand, evaluate disease modules and graph proximity in PPI networks \cite{string2018, string2019}. What is missing is a direct bridge between these two: evaluate DrugCLIP embeddings by asking whether they recover known brain disease modules.
+Most embedding papers report task metrics (for example enrichment in screening benchmarks). Network medicine papers, on the other hand, evaluate disease modules and graph proximity in PPI networks \cite{string2018, string2019}. What is often missing is a disease-specific control framework. Here we bridge these areas by evaluating AD genes against matched non-AD controls under the same pipeline, with explicit emphasis on AD-vulnerable regions.
 
 \section{Existing Models}
 Current approaches can be grouped as:
@@ -34,14 +36,15 @@ Current approaches can be grouped as:
     \item \textbf{Network medicine methods} based on disease gene sets and PPI proximity \cite{string2018}.
     \item \textbf{Expression-centric approaches} using region or cell-type profiles \cite{allenAtlas2012, seaad2024}.
 \end{itemize}
-Our project does one thing clearly: check whether DrugCLIP embedding similarity agrees with known disease network structure.
+Our project does one thing clearly: test whether AD-implicated genes receive stronger AD-region and network support than non-AD controls under a unified scoring framework.
 
 \section{Available Datasets}
 \begin{itemize}
     \item \textbf{DrugCLIP protein embeddings}: pretrained vectors for proteins from published DrugCLIP resources \cite{adGwas2025, drugclipData2024}.
-    \item \textbf{Curated disease genes}: trusted brain-disease gene sets used as reference positives \cite{disgenet2023}.
+    \item \textbf{AD disease gene set (primary input)}: AD-implicated genes from AD GWAS/TWAS resources.
+    \item \textbf{Control gene set (negative control)}: non-AD genes matched on key properties (for example expression level and network degree), optionally including atlas-derived stable or housekeeping-like genes.
     \item \textbf{PPI network}: high-confidence protein interaction graph used for module and proximity tests \cite{string2018, string2019}.
-    \item \textbf{Optional region metadata}: Allen/SEA-AD annotations for follow-up stratification \cite{allenAtlas2012, seaad2024}.
+    \item \textbf{Region/cell-type expression metadata}: Allen/SEA-AD resources, with primary focus on entorhinal cortex, hippocampus, and temporal cortex \cite{allenAtlas2012, seaad2024}.
 \end{itemize}
 
 \section{Data Generation}
@@ -60,12 +63,31 @@ We use a simple pipeline that is easy to audit and explain.
 \textbf{Planned workflow}
 \begin{enumerate}
     \item \textbf{Map IDs across resources.} DrugCLIP, PPI, and disease resources use different identifier systems (for example UniProt IDs versus gene symbols). We first create a single crosswalk table so the same biological entity is represented consistently across all inputs. This step is critical because all downstream network joins depend on it; even a small mismatch rate can create false negatives or artificial sparsity.
-    \item \textbf{Build an embedding similarity graph.} We represent each protein as a node and connect it to its top-$k$ nearest neighbors by cosine similarity in embedding space. The result is a kNN graph that converts high-dimensional vectors into a structure we can inspect and test directly. This graph is our operational definition of ``embedding-derived similarity'' and enables module and proximity analyses.
-    \item \textbf{Create seed neighborhoods.} We treat known disease genes as seed nodes, then collect their local embedding neighborhoods (1-hop; optionally 2-hop for sensitivity checks). This gives us per-seed candidate sets that can be compared against known disease biology. The neighborhood view is useful because it translates abstract embedding distances into interpretable local subnetworks.
-    \item \textbf{Test module recovery.} For each seed neighborhood, we measure overlap with known disease-module genes and compute enrichment statistics versus a null model. The key question is whether embedding neighborhoods contain more disease-module genes than expected by chance. If they do, the embedding is likely capturing disease-relevant structure rather than generic protein similarity.
-    \item \textbf{Test PPI proximity.} We map embedding-prioritized proteins onto the PPI graph and compute their distance to known disease genes (for example shortest-path or random-walk based proximity). We then compare this proximity to baseline sets. This checks whether embedding-prioritized proteins are not only similar in vector space but also biologically close to disease mechanisms in an independent network.
+    \item \textbf{Build an embedding similarity graph.} We represent each protein as a node and connect it to its top-$k$ nearest neighbors by cosine similarity in embedding space. The result is a kNN graph that converts high-dimensional vectors into a structure we can inspect and test directly. This graph is our operational definition of ``embedding-derived similarity'' and enables AD-vs-control comparisons.
+    \item \textbf{Create AD and control seed neighborhoods.} We treat AD genes as primary seeds and matched non-AD genes as control seeds, then collect local embedding neighborhoods (1-hop; optionally 2-hop for sensitivity checks). This provides a fair side-by-side comparison under identical settings.
+    \item \textbf{Compute region-specific support.} For each seed set, we score enrichment and specificity in entorhinal cortex, hippocampus, and temporal cortex (and relevant cell types). We summarize this as an IntegratedScore that combines expression strength, regional specificity, and network support.
+    \item \textbf{Test module recovery and PPI proximity.} We measure overlap with AD-relevant modules and graph proximity to known AD genes, then compare AD seeds against control seeds and null models. This checks whether prioritized genes are not only close in embedding space, but also close to AD mechanisms in an independent network.
 \end{enumerate}
 
+\textbf{IntegratedScore definition (used for ranking).}
+For each gene $g$, we compute
+\[
+    \mathrm{IntegratedScore}(g)=
+    w_E \cdot Z_E(g) +
+    w_S \cdot Z_S(g) +
+    w_N \cdot Z_N(g),
+\]
+where $w_E+w_S+w_N=1$ and default weights are $w_E=0.40$, $w_S=0.30$, $w_N=0.30$.
+
+\textbf{Component terms}
+\begin{itemize}
+    \item $Z_E(g)$: standardized expression strength in AD-vulnerable regions (entorhinal, hippocampus, temporal cortex), averaged across available donors/cell strata.
+    \item $Z_S(g)$: standardized AD-region specificity, computed as expression contrast between AD-vulnerable regions and other cortical regions.
+    \item $Z_N(g)$: standardized network support, combining (i) embedding-neighborhood AD enrichment and (ii) PPI proximity to known AD genes.
+\end{itemize}
+IntegratedScore is a transparent linear fusion of normalized signals, easy to ablate and sensitivity-test by changing weights. A higher score means a gene is simultaneously more expressed where AD pathology is prominent and better connected to known AD biology, making it a stronger mechanistic prioritization candidate.
+
+\newpage
 \textbf{Minimum controls and stress tests}
 
 \textbf{Control 1: Label-shuffle test.}
@@ -77,6 +99,9 @@ We replace DrugCLIP vectors with random vectors of the same dimension and scale,
 \textbf{Control 3: Degree-matched random neighborhood baseline.}
 For each seed, we sample random protein sets matched to neighborhood size (and matched degree distribution in the PPI graph), then compute the same overlap and proximity metrics. This prevents inflated performance due to hub bias and graph topology effects. It is a fairer baseline than uniform random sampling and is the main null model for significance testing.
 
+\textbf{Control 4: Matched non-AD gene-set control.}
+We run a fixed non-AD control gene set through the same full pipeline and compare distributions of IntegratedScore, module overlap, and PPI proximity to the AD set. This is the primary specificity control: if AD biology is truly captured, AD genes should rank higher and enrich more strongly in AD-vulnerable regions than matched controls.
+
 \textbf{Stress test 1: kNN sensitivity sweep.}
 We vary $k$ (for example 10, 25, 50) when constructing the embedding graph and check metric stability. Small $k$ can be too sparse; large $k$ can wash out local structure. A robust result should keep the same qualitative conclusion across a reasonable $k$ range.
 
@@ -85,9 +110,9 @@ We rerun analyses across multiple PPI confidence cutoffs (for example medium and
 
 \textbf{Primary deliverables}
 \begin{itemize}
-    \item Metric table comparing DrugCLIP to baselines and controls.
+    \item Metric table comparing AD gene set vs non-AD controls across all baselines.
     \item Clear graph visualizations (embedding neighborhoods + PPI overlap).
-    \item Ranked list of candidate proteins with evidence columns.
+    \item Ranked list of AD-prioritized proteins with IntegratedScore evidence columns.
     \item Reproducible code and compact error analysis.
 \end{itemize}
 
