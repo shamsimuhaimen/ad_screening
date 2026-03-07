@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
-"""Download and extract all data used in the project."""
+"""Download all LOI inputs used in the AD prediction-head workflow.
+
+This script fetches:
+- brain expression data used to construct AD-vs-control labels and region scores,
+- AD protein compilation supplement used to define the disease gene set,
+- gene-symbol->UniProt mapping used to align labels with embeddings,
+- DrugCLIP embedding files used to train the prediction head.
+
+It provides one reproducible command to materialize the datasets required by
+the LOI pipeline end-to-end.
+"""
 
 from __future__ import annotations
 
@@ -23,6 +33,12 @@ DATASETS: list[Dataset] = [
         "ad_protein_compilation",
         {
             "https://static-content.springer.com/esm/art%3A10.1038%2Fs41467-023-40208-x/MediaObjects/41467_2023_40208_MOESM4_ESM.xlsx"
+        },
+    ),
+    Dataset(
+        "gene_symbol_to_uniprot_human",
+        {
+            "https://storage.googleapis.com/public-download-files/hgnc/tsv/tsv/hgnc_complete_set.txt",
         },
     ),
     Dataset(
@@ -69,7 +85,7 @@ def symlink(dataset_name: str, filename: str) -> None:
     target_dir = RAW_DIR / dataset_name
     target_dir.mkdir(parents=True, exist_ok=True)
     target_path = target_dir / filename
-    source_path = DOWNLOAD_DIR / filename
+    source_path = (DOWNLOAD_DIR / filename).resolve()
     if target_path.exists() or target_path.is_symlink():
         target_path.unlink()
     target_path.symlink_to(source_path)
