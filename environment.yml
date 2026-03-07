@@ -6,3 +6,8 @@ dependencies:
   - pip
   - black
   - pre-commit
+  - pandas
+  - numpy
+  - matplotlib
+  - seaborn
+  - matplotlib

@@ -12,11 +12,26 @@ from collections import namedtuple
 DOWNLOAD_DIR = Path("data/download")
 RAW_DIR = Path("data/raw")
 
-Dataset = namedtuple("Dataset", ["name", "url"])
+Dataset = namedtuple("Dataset", ["name", "urls"])
 DATASETS: list[Dataset] = [
-    Dataset("bulk_rna_seq_human_brain", "https://human.brain-map.org/api/v2/well_known_file_download/278447594"),
+    Dataset("bulk_rna_seq_human_brain", {"https://human.brain-map.org/api/v2/well_known_file_download/278447594"}),
     Dataset(
-        "ontology_human_brain", "https://raw.githubusercontent.com/brain-bican/human_brain_atlas_ontology/main/hbao.owl"
+        "ontology_human_brain",
+        {"https://raw.githubusercontent.com/brain-bican/human_brain_atlas_ontology/main/hbao.owl"},
+    ),
+    Dataset(
+        "ad_protein_compilation",
+        {
+            "https://static-content.springer.com/esm/art%3A10.1038%2Fs41467-023-40208-x/MediaObjects/41467_2023_40208_MOESM4_ESM.xlsx"
+        },
+    ),
+    Dataset(
+        "drugclip_data",
+        {
+            "https://huggingface.co/datasets/THU-ATOM/DrugCLIP_data/resolve/main/benchmark_throughput/dtwg_af_embeddings.npy",
+            "https://huggingface.co/datasets/THU-ATOM/DrugCLIP_data/resolve/main/benchmark_throughput/dtwg_af_names_.npy",
+            "https://huggingface.co/datasets/THU-ATOM/DrugCLIP_data/resolve/main/targets.zip",
+        },
     ),
 ]
 
@@ -62,15 +77,16 @@ def symlink(dataset_name: str, filename: str) -> None:
 
 def main() -> None:
     """Download datasets and either extract archives or symlink plain files."""
-    for dataset_name, url in DATASETS:
-        print(f"Downloading {dataset_name}")
+    for dataset_name, urls in DATASETS:
+        for url in sorted(urls):
+            print(f"Downloading {dataset_name}: {url}")
 
-        filename = download(url, DOWNLOAD_DIR)
+            filename = download(url, DOWNLOAD_DIR)
 
-        if filename.endswith("zip"):
-            extract(DOWNLOAD_DIR / filename, RAW_DIR / dataset_name)
-        else:
-            symlink(dataset_name, filename)
+            if filename.endswith("zip"):
+                extract(DOWNLOAD_DIR / filename, RAW_DIR / dataset_name)
+            else:
+                symlink(dataset_name, filename)
 
 
 if __name__ == "__main__":

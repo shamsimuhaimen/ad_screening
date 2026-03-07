@@ -214,3 +214,5 @@ documents/**
 !documents/**/
 !documents/**/*.tex
 !documents/**/*.bib
+
+results/
