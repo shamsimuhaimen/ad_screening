@@ -45,10 +45,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--controls-per-ad", type=int, default=2)
     p.add_argument("--min-global-expression", type=float, default=1e-6)
     p.add_argument("--test-size", type=float, default=0.2)
+    p.add_argument("--split-file", type=Path, default=None)
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--epochs", type=int, default=400)
-    p.add_argument("--lr", type=float, default=0.1)
+    p.add_argument("--epochs", type=int, default=200)
+    p.add_argument("--lr", type=float, default=0.001)
     p.add_argument("--l2", type=float, default=1e-4)
+    p.add_argument("--hidden-dim", type=int, default=64)
+    p.add_argument(
+        "--ablation",
+        type=str,
+        choices=["embedding", "random_embedding", "label_shuffle"],
+        default="embedding",
+    )
     return p.parse_args()
 
 
@@ -122,9 +130,7 @@ def load_expression_matrix(data_dir: Path, sample_names: list[str]) -> pd.DataFr
     expr = pd.read_csv(data_dir / "RNAseqTPM.csv", header=None, low_memory=False)
     expected_cols = len(sample_names) + 1
     if expr.shape[1] != expected_cols:
-        raise ValueError(
-            f"Unexpected RNAseqTPM shape {expr.shape}. Expected {expected_cols} columns."
-        )
+        raise ValueError(f"Unexpected RNAseqTPM shape {expr.shape}. Expected {expected_cols} columns.")
     expr.columns = ["gene_symbol", *sample_names]
     return expr
 
@@ -172,9 +178,7 @@ def build_label_table(args: argparse.Namespace) -> pd.DataFrame:
         raise ValueError("None of the AD genes were found in the expression data.")
 
     control_symbols = select_matched_controls(merged, ad_present, args.controls_per_ad)
-    selected = merged[
-        merged["gene_symbol"].isin(ad_present) | merged["gene_symbol"].isin(control_symbols)
-    ].copy()
+    selected = merged[merged["gene_symbol"].isin(ad_present) | merged["gene_symbol"].isin(control_symbols)].copy()
     selected["label"] = np.where(selected["gene_symbol"].isin(ad_present), "AD", "control")
     selected["y"] = np.where(selected["label"] == "AD", 1.0, 0.0)
 
@@ -196,47 +200,84 @@ def sigmoid(x: np.ndarray) -> np.ndarray:
     return 1.0 / (1.0 + np.exp(-np.clip(x, -40, 40)))
 
 
-def bce_loss(x: np.ndarray, y: np.ndarray, w: np.ndarray, b: float, l2: float) -> float:
-    logits = x @ w + b
+def relu(x: np.ndarray) -> np.ndarray:
+    return np.maximum(x, 0.0)
+
+
+def ffn_forward(
+    x: np.ndarray,
+    w1: np.ndarray,
+    b1: np.ndarray,
+    w2: np.ndarray,
+    b2: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    h_pre = x @ w1 + b1
+    h = relu(h_pre)
+    logits = (h @ w2).reshape(-1) + b2
     probs = sigmoid(logits)
+    return h_pre, h, probs
+
+
+def bce_loss_ffn(
+    x: np.ndarray,
+    y: np.ndarray,
+    w1: np.ndarray,
+    b1: np.ndarray,
+    w2: np.ndarray,
+    b2: float,
+    l2: float,
+) -> float:
+    _, _, probs = ffn_forward(x, w1, b1, w2, b2)
     eps = 1e-12
     ce = -(y * np.log(probs + eps) + (1.0 - y) * np.log(1.0 - probs + eps)).mean()
-    reg = 0.5 * l2 * float(np.sum(w * w))
+    reg = 0.5 * l2 * float(np.sum(w1 * w1) + np.sum(w2 * w2))
     return float(ce + reg)
 
 
-def train_logistic(
+def train_small_ffn(
     x_train: np.ndarray,
     y_train: np.ndarray,
     x_test: np.ndarray,
     y_test: np.ndarray,
+    hidden_dim: int,
     epochs: int,
     lr: float,
     l2: float,
-) -> tuple[np.ndarray, float, list[dict[str, float]]]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, list[dict[str, float]]]:
     n, d = x_train.shape
-    w = np.zeros(d, dtype=np.float64)
-    b = 0.0
+    rng = np.random.default_rng(42)
+    w1 = rng.normal(0.0, 1.0 / np.sqrt(d), size=(d, hidden_dim)).astype(np.float64)
+    b1 = np.zeros(hidden_dim, dtype=np.float64)
+    w2 = rng.normal(0.0, 1.0 / np.sqrt(hidden_dim), size=(hidden_dim, 1)).astype(np.float64)
+    b2 = 0.0
     history: list[dict[str, float]] = []
 
     for epoch in range(1, epochs + 1):
-        logits = x_train @ w + b
-        probs = sigmoid(logits)
+        h_pre, h, probs = ffn_forward(x_train, w1, b1, w2, b2)
         err = probs - y_train
-        grad_w = (x_train.T @ err) / n + l2 * w
-        grad_b = float(err.mean())
-        w -= lr * grad_w
-        b -= lr * grad_b
+
+        # Backpropagation through 1-hidden-layer FFN.
+        grad_w2 = (h.T @ err.reshape(-1, 1)) / n + l2 * w2
+        grad_b2 = float(err.mean())
+        grad_h = err.reshape(-1, 1) @ w2.T
+        grad_h_pre = grad_h * (h_pre > 0.0)
+        grad_w1 = (x_train.T @ grad_h_pre) / n + l2 * w1
+        grad_b1 = grad_h_pre.mean(axis=0)
+
+        w2 -= lr * grad_w2
+        b2 -= lr * grad_b2
+        w1 -= lr * grad_w1
+        b1 -= lr * grad_b1
 
         history.append(
             {
                 "epoch": float(epoch),
-                "train_loss": bce_loss(x_train, y_train, w, b, l2),
-                "test_loss": bce_loss(x_test, y_test, w, b, l2),
+                "train_loss": bce_loss_ffn(x_train, y_train, w1, b1, w2, b2, l2),
+                "test_loss": bce_loss_ffn(x_test, y_test, w1, b1, w2, b2, l2),
             }
         )
 
-    return w, b, history
+    return w1, b1, w2, b2, history
 
 
 def roc_auc(y_true: np.ndarray, y_score: np.ndarray) -> float:
@@ -271,8 +312,13 @@ def pr_auc(y_true: np.ndarray, y_score: np.ndarray) -> float:
 def main() -> None:
     args = parse_args()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = Path(f"results/train_ad_predictor_{timestamp}")
+    output_dir = Path(f"results/ad_predictor_{timestamp}_{args.ablation}")
     output_dir.mkdir(parents=True, exist_ok=True)
+    hparams = vars(args).copy()
+    hparams["output_dir"] = str(output_dir)
+    hparams["timestamp"] = timestamp
+    with open(output_dir / "hyperparameters.json", "w") as f:
+        json.dump(hparams, f, indent=2, default=str)
 
     print("[1/7] Building AD/control label table from expression data...")
     labels = build_label_table(args)
@@ -309,37 +355,88 @@ def main() -> None:
         raise ValueError("No overlapping genes between labels and embedding names.")
     print(f"      overlap after mapping/join: {len(merged)} rows ({merged['gene_symbol'].nunique()} unique genes)")
 
+    # Aggregate multiple embedding rows to one vector per gene.
+    row_lists = merged.groupby("gene_symbol")["row_idx"].apply(list)
+    gene_df = (
+        merged.groupby("gene_symbol", as_index=False)
+        .agg(
+            {
+                "label": "first",
+                "y": "first",
+                "integrated_score": "mean",
+                "uniprot_accession": "first",
+            }
+        )
+    )
+    gene_df["row_indices"] = gene_df["gene_symbol"].map(row_lists)
+    x = np.vstack(
+        [
+            embeddings[np.asarray(indices, dtype=int)].mean(axis=0)
+            for indices in gene_df["row_indices"]
+        ]
+    )
+    y = gene_df["y"].to_numpy(dtype=np.float64)
+    print(f"      aggregated to one embedding per gene: {len(gene_df)} genes")
+
     print("[5/7] Preparing train/test split...")
-    x = embeddings[merged["row_idx"].to_numpy()]
-    y = merged["y"].to_numpy(dtype=np.float64)
+    print(f"      ablation mode: {args.ablation}")
 
     rng = np.random.default_rng(args.seed)
-    # Group-wise split by gene to prevent leakage across repeated rows per gene.
-    gene_table = merged[["gene_symbol", "y"]].drop_duplicates(subset=["gene_symbol"], keep="first")
-    pos_genes = gene_table.loc[gene_table["y"] == 1, "gene_symbol"].to_numpy()
-    neg_genes = gene_table.loc[gene_table["y"] == 0, "gene_symbol"].to_numpy()
-    rng.shuffle(pos_genes)
-    rng.shuffle(neg_genes)
+    if args.ablation == "random_embedding":
+        x = rng.normal(loc=0.0, scale=1.0, size=x.shape).astype(np.float64)
+    # Split by gene (already one row per gene after aggregation).
+    gene_table = gene_df[["gene_symbol", "y"]].copy()
+    split_file = args.split_file or Path(f"data/processed/ad_predictor_split_seed_{args.seed}.json")
+    split_file.parent.mkdir(parents=True, exist_ok=True)
+    available_genes = set(gene_table["gene_symbol"].tolist())
 
-    n_pos_test_genes = max(1, int(round(len(pos_genes) * args.test_size)))
-    n_neg_test_genes = max(1, int(round(len(neg_genes) * args.test_size)))
-    test_genes = set(pos_genes[:n_pos_test_genes]).union(set(neg_genes[:n_neg_test_genes]))
+    if split_file.exists():
+        with open(split_file) as f:
+            split_data = json.load(f)
+        test_genes = set(split_data.get("test_genes", []))
+        test_genes = test_genes.intersection(available_genes)
+        print(f"      using existing split: {split_file}")
+    else:
+        pos_genes = gene_table.loc[gene_table["y"] == 1, "gene_symbol"].to_numpy()
+        neg_genes = gene_table.loc[gene_table["y"] == 0, "gene_symbol"].to_numpy()
+        rng.shuffle(pos_genes)
+        rng.shuffle(neg_genes)
 
-    test_mask = merged["gene_symbol"].isin(test_genes).to_numpy()
+        n_pos_test_genes = max(1, int(round(len(pos_genes) * args.test_size)))
+        n_neg_test_genes = max(1, int(round(len(neg_genes) * args.test_size)))
+        test_genes = set(pos_genes[:n_pos_test_genes]).union(set(neg_genes[:n_neg_test_genes]))
+        with open(split_file, "w") as f:
+            json.dump(
+                {
+                    "seed": args.seed,
+                    "test_size": args.test_size,
+                    "test_genes": sorted(test_genes),
+                },
+                f,
+                indent=2,
+            )
+        print(f"      wrote new split: {split_file}")
+
+    test_mask = gene_df["gene_symbol"].isin(test_genes).to_numpy()
     train_mask = ~test_mask
     idx = np.arange(len(y))
     train_idx = idx[train_mask]
     test_idx = idx[test_mask]
 
-    print(f"      unique genes: total={gene_table.shape[0]} "
-          f"train={gene_table.shape[0] - len(test_genes)} test={len(test_genes)}")
+    print(
+        f"      unique genes: total={gene_table.shape[0]} "
+        f"train={gene_table.shape[0] - len(test_genes)} test={len(test_genes)}"
+    )
     print(f"      samples: total={len(y)} train={len(train_idx)} test={len(test_idx)}")
-    print(f"      class counts (rows): pos={int((y==1).sum())} neg={int((y==0).sum())}")
+    print(f"      class counts (genes): pos={int((y==1).sum())} neg={int((y==0).sum())}")
 
     x_train = x[train_idx]
     y_train = y[train_idx]
     x_test = x[test_idx]
     y_test = y[test_idx]
+
+    if args.ablation == "label_shuffle":
+        y_train = rng.permutation(y_train)
 
     mean = x_train.mean(axis=0)
     std = x_train.std(axis=0)
@@ -347,23 +444,26 @@ def main() -> None:
     x_train = (x_train - mean) / std
     x_test = (x_test - mean) / std
 
-    print("[6/7] Training logistic prediction head...")
-    w, b, loss_history = train_logistic(
+    print("[6/7] Training small FFN prediction head...")
+    print(f"      architecture: 768 -> {args.hidden_dim} -> 1")
+    w1, b1, w2, b2, loss_history = train_small_ffn(
         x_train=x_train,
         y_train=y_train,
         x_test=x_test,
         y_test=y_test,
+        hidden_dim=args.hidden_dim,
         epochs=args.epochs,
         lr=args.lr,
         l2=args.l2,
     )
 
     print("[7/7] Evaluating and writing outputs...")
-    train_probs = sigmoid(x_train @ w + b)
-    test_probs = sigmoid(x_test @ w + b)
+    _, _, train_probs = ffn_forward(x_train, w1, b1, w2, b2)
+    _, _, test_probs = ffn_forward(x_test, w1, b1, w2, b2)
     test_pred = (test_probs >= 0.5).astype(int)
 
     metrics = {
+        "ablation": args.ablation,
         "n_samples": int(len(y)),
         "n_train": int(len(train_idx)),
         "n_test": int(len(test_idx)),
@@ -378,7 +478,7 @@ def main() -> None:
     with open(output_dir / "metrics.json", "w") as f:
         json.dump(metrics, f, indent=2)
 
-    pred_df = merged.iloc[test_idx][["gene_symbol", "uniprot_accession", "label", "integrated_score"]].copy()
+    pred_df = gene_df.iloc[test_idx][["gene_symbol", "uniprot_accession", "label", "integrated_score"]].copy()
     pred_df["y_true"] = y_test.astype(int)
     pred_df["y_prob"] = test_probs
     pred_df["y_pred"] = test_pred
@@ -398,6 +498,7 @@ def main() -> None:
     plt.close()
 
     print(json.dumps(metrics, indent=2))
+    print(f"Wrote: {output_dir / 'hyperparameters.json'}")
     print(f"Wrote: {output_dir / 'labels_used.csv'}")
     print(f"Wrote: {output_dir / 'gene_to_uniprot_mapping.csv'}")
     print(f"Wrote: {output_dir / 'metrics.json'}")
