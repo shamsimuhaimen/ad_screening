@@ -11,4 +11,6 @@ dependencies:
   - openpyxl
   - matplotlib
   - seaborn
-  - openpyxl
+  - pyyaml
+  - pip:
+      - prefect
