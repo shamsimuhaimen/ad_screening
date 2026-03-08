@@ -17,6 +17,9 @@ Default config: `experiments/prefect_experiments.yaml`
 Run matrix (one command):
 `python src/scripts/run_prefect_experiments.py`
 
+Run matrix and auto-bootstrap missing downloaded inputs:
+`python src/scripts/run_prefect_experiments.py --bootstrap-data`
+
 Smoke test only first N runs:
 `python src/scripts/run_prefect_experiments.py --max-runs 3`
 

@@ -22,7 +22,7 @@ import yaml
 from prefect import flow
 
 from characterize_embedding_space import build_gene_embeddings, train_logistic
-from train_ad_predictor import build_gene_to_uniprot_map, build_label_table, pr_auc, roc_auc
+from train_ad_predictor import build_gene_to_uniprot_map, build_label_table
 
 
 DEFAULT_CONFIG = Path("experiments/prefect_experiments.yaml")
@@ -33,6 +33,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     p.add_argument("--results-dir", type=Path, default=Path("results"))
     p.add_argument("--max-runs", type=int, default=None, help="Optional cap for smoke tests.")
+    p.add_argument(
+        "--bootstrap-data",
+        action="store_true",
+        help="If core downloaded inputs are missing, run src/scripts/download_data.py before experiments.",
+    )
     return p.parse_args()
 
 
@@ -60,6 +65,43 @@ def _git_commit() -> str:
 def _stable_hash(payload: dict[str, Any]) -> str:
     text = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+
+
+def _required_download_inputs() -> list[Path]:
+    return [
+        Path("data/raw/bulk_rna_seq_human_brain/Genes.csv"),
+        Path("data/raw/bulk_rna_seq_human_brain/SampleAnnot.csv"),
+        Path("data/raw/bulk_rna_seq_human_brain/RNAseqTPM.csv"),
+        Path("data/download/dtwg_af_embeddings.npy"),
+        Path("data/download/dtwg_af_names_.npy"),
+        Path("data/download/hgnc_complete_set.txt"),
+    ]
+
+
+def ensure_bootstrap_data(bootstrap_data: bool) -> None:
+    missing = [p for p in _required_download_inputs() if not p.exists()]
+    if not missing:
+        return
+    if not bootstrap_data:
+        names = ", ".join(str(p) for p in missing[:4])
+        if len(missing) > 4:
+            names += ", ..."
+        raise FileNotFoundError(
+            "Missing downloaded inputs required by Prefect workflow: "
+            f"{names}. Re-run with --bootstrap-data."
+        )
+    cmd = ["python", "src/scripts/download_data.py"]
+    proc = subprocess.run(cmd, check=False, text=True, capture_output=True)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            "Bootstrap download failed. Command: python src/scripts/download_data.py\n"
+            f"STDOUT:\n{proc.stdout}\n\nSTDERR:\n{proc.stderr}"
+        )
+
+    still_missing = [p for p in _required_download_inputs() if not p.exists()]
+    if still_missing:
+        missing_names = ", ".join(str(p) for p in still_missing)
+        raise FileNotFoundError(f"Bootstrap finished but required inputs are still missing: {missing_names}")
 
 
 def _stratified_split(y: np.ndarray, test_size: float, seed: int) -> tuple[np.ndarray, np.ndarray]:
@@ -454,6 +496,7 @@ def run_flow(config_path: Path, results_dir: Path, max_runs: int | None = None) 
 
 def main() -> None:
     args = parse_args()
+    ensure_bootstrap_data(bootstrap_data=args.bootstrap_data)
     # Use the underlying function to avoid requiring a local Prefect API server.
     runner = getattr(run_flow, "fn", run_flow)
     out = runner(config_path=args.config, results_dir=args.results_dir, max_runs=args.max_runs)
