@@ -5,7 +5,8 @@ This script fetches:
 - brain expression data used to construct AD-vs-control labels and region scores,
 - AD protein compilation supplement used to define the disease gene set,
 - gene-symbol->UniProt mapping used to align labels with embeddings,
-- DrugCLIP embedding files used to train the prediction head.
+- DrugCLIP embedding files used to train the prediction head,
+- human PPI files used to test AD topology/network concentration.
 
 It provides one reproducible command to materialize the datasets required by
 the LOI pipeline end-to-end.
@@ -47,6 +48,13 @@ DATASETS: list[Dataset] = [
             "https://huggingface.co/datasets/THU-ATOM/DrugCLIP_data/resolve/main/benchmark_throughput/dtwg_af_embeddings.npy",
             "https://huggingface.co/datasets/THU-ATOM/DrugCLIP_data/resolve/main/benchmark_throughput/dtwg_af_names_.npy",
             "https://huggingface.co/datasets/THU-ATOM/DrugCLIP_data/resolve/main/targets.zip",
+        },
+    ),
+    Dataset(
+        "ppi_string_human",
+        {
+            "https://stringdb-static.org/download/protein.links.detailed.v12.0/9606.protein.links.detailed.v12.0.txt.gz",
+            "https://stringdb-static.org/download/protein.info.v12.0/9606.protein.info.v12.0.txt.gz",
         },
     ),
 ]
