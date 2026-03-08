@@ -21,7 +21,16 @@ Run matrix and auto-bootstrap missing downloaded inputs:
 `python src/scripts/run_prefect_experiments.py --bootstrap-data`
 
 Smoke test only first N runs:
-`python src/scripts/run_prefect_experiments.py --max-runs 3`
+Configure experiment matrix size in `experiments/prefect_experiments.yaml`.
 
-Aggregate observed-vs-null tests (empirical p + BH-FDR):
+Each run root now includes reproducibility manifests:
+- `dependency_manifest.json` (Python/Conda environment snapshot, pip freeze, lockfile hashes)
+
+Workflow graph structure in Prefect:
+- Parent flow: `ad-screening-experiments`
+- Parent flow tasks: ensure/download data, dependency manifest, final aggregation
+- Child flow per matrix entry: `ad-screening-matrix-run`
+- Per-run tasks: materialize labels, classifier probe, PPI signal, cosine hops, run manifest, summary row (classifier + PPI + hops metrics)
+
+Standalone aggregate step (optional, already run by the Prefect parent flow):
 `python src/scripts/aggregate_experiment_results.py --run-root results/prefect_experiments_YYYYMMDD_HHMMSS`
