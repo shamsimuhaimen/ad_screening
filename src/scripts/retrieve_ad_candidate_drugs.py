@@ -40,6 +40,12 @@ def parse_args() -> argparse.Namespace:
         help="labels_used.csv from train_ad_predictor.py (needs gene_symbol + y).",
     )
     p.add_argument(
+        "--ad-genes-csv",
+        type=Path,
+        default=Path("data/processed/ad_genes.csv"),
+        help="Optional AD gene list (paper-derived). If present, used as the AD target set.",
+    )
+    p.add_argument(
         "--targets-root",
         type=Path,
         default=Path("data/raw/drugclip_data/targets"),
@@ -75,6 +81,22 @@ def load_ad_genes(labels_csv: Path) -> set[str]:
     labels["gene_symbol"] = labels["gene_symbol"].astype(str).str.strip().str.upper()
     labels["y"] = labels["y"].astype(int)
     return set(labels.loc[labels["y"] == 1, "gene_symbol"].tolist())
+
+
+def load_ad_genes_from_csv(ad_genes_csv: Path) -> set[str]:
+    if not ad_genes_csv.exists():
+        return set()
+    df = pd.read_csv(ad_genes_csv)
+    candidates = [c for c in df.columns if "gene" in c.lower() and "symbol" in c.lower()]
+    col = candidates[0] if candidates else df.columns[0]
+    s = (
+        df[col]
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+    s = s[(s != "") & (s != "NAN")]
+    return set(s.tolist())
 
 
 def target_folder_to_gene_candidates(target_name: str) -> set[str]:
@@ -121,14 +143,17 @@ def gather_rows(targets_root: Path, ad_genes: set[str], min_pchembl: float, max_
         present = [c for c in keep_cols if c in df.columns]
         df = df[present].copy()
         df["target_folder"] = target_name
-        df["target_gene"] = matched_ad[0]
         df["target_gene_matches"] = ";".join(matched_ad)
         df["is_potent"] = is_potent(df, min_pchembl=min_pchembl, max_nm=max_nm)
         df = df[df["is_potent"]].copy()
         if df.empty:
             continue
 
-        rows.append(df)
+        # For composite folders, count support for each matched AD gene.
+        for g in matched_ad:
+            x = df.copy()
+            x["target_gene"] = g
+            rows.append(x)
         if i % 5 == 0 or i == len(dirs):
             print(f"  progress {i}/{len(dirs)} folders, potent rows kept: {sum(len(x) for x in rows):,}")
 
@@ -177,8 +202,15 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print("[1/4] Loading AD genes...")
-    ad_genes = load_ad_genes(args.labels_csv)
-    print(f"      AD genes in labels: {len(ad_genes)}")
+    ad_genes_from_labels = load_ad_genes(args.labels_csv)
+    ad_genes_from_paper = load_ad_genes_from_csv(args.ad_genes_csv)
+    if ad_genes_from_paper:
+        ad_genes = ad_genes_from_paper
+        source = str(args.ad_genes_csv)
+    else:
+        ad_genes = ad_genes_from_labels
+        source = str(args.labels_csv)
+    print(f"      AD genes loaded: {len(ad_genes)} (source: {source})")
 
     print("[2/4] Gathering AD-target compound evidence...")
     evidence = gather_rows(
@@ -203,6 +235,7 @@ def main() -> None:
 
     summary = {
         "labels_csv": str(args.labels_csv),
+        "ad_genes_source": source,
         "targets_root": str(args.targets_root),
         "min_pchembl": float(args.min_pchembl),
         "max_standard_value_nm": float(args.max_standard_value_nm),
