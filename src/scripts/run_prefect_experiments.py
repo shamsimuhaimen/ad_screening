@@ -10,12 +10,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import yaml
@@ -37,6 +39,11 @@ def parse_args() -> argparse.Namespace:
         "--bootstrap-data",
         action="store_true",
         help="If core downloaded inputs are missing, run src/scripts/download_data.py before experiments.",
+    )
+    p.add_argument(
+        "--local-server",
+        action="store_true",
+        help="Run with Prefect server orchestration (uses PREFECT_API_URL or defaults to http://127.0.0.1:4200/api).",
     )
     return p.parse_args()
 
@@ -134,6 +141,16 @@ def _load_annotation_counts(path: Path | None) -> pd.Series | None:
     return ann.set_index("gene_symbol")["annotation_count"]
 
 
+def _normalize_label_schema(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    # gene_id is metadata-only in this pipeline; use gene_symbol everywhere downstream.
+    if "gene_id" in out.columns:
+        out = out.drop(columns=["gene_id"])
+    if "y" in out.columns:
+        out["y"] = pd.to_numeric(out["y"], errors="coerce").astype("Int64")
+    return out
+
+
 def _build_baseline_labels(
     observed_labels: pd.DataFrame,
     baseline_name: str,
@@ -220,7 +237,7 @@ def prepare_cohort_artifacts(cohort: dict[str, Any], annotation_counts_csv: str 
         min_global_expression=float(cohort["min_global_expression"]),
     )
 
-    labels = build_label_table(args_ns)
+    labels = _normalize_label_schema(build_label_table(args_ns))
     labels["gene_symbol"] = labels["gene_symbol"].astype(str).str.upper().str.strip()
     labels_csv = out_dir / "observed_labels.csv"
     labels.to_csv(labels_csv, index=False)
@@ -338,6 +355,58 @@ def _build_matrix(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     return runs
 
 
+def write_summary_graph(root_dir: Path, summary_df: pd.DataFrame) -> Path:
+    plot_path = root_dir / "run_matrix_summary.png"
+
+    if summary_df.empty:
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.text(0.5, 0.5, "No runs completed", ha="center", va="center")
+        ax.axis("off")
+        fig.tight_layout()
+        fig.savefig(plot_path, dpi=180)
+        plt.close(fig)
+        return plot_path
+
+    count_df = (
+        summary_df.groupby("baseline", as_index=False)
+        .size()
+        .rename(columns={"size": "n_runs"})
+        .sort_values("n_runs", ascending=False)
+    )
+    metric_df = (
+        summary_df.groupby("baseline", as_index=False)
+        .agg(
+            mean_auroc=("probe_test_auroc", "mean"),
+            mean_auprc=("probe_test_auprc", "mean"),
+            mean_acc=("probe_test_accuracy", "mean"),
+        )
+        .sort_values("mean_auroc", ascending=False)
+    )
+    metric_df.to_csv(root_dir / "run_matrix_summary_by_baseline.csv", index=False)
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
+    axes[0].bar(count_df["baseline"], count_df["n_runs"], color="#4C78A8")
+    axes[0].set_title("Runs by Baseline")
+    axes[0].set_ylabel("Run Count")
+    axes[0].tick_params(axis="x", rotation=25)
+
+    x = np.arange(len(metric_df))
+    width = 0.25
+    axes[1].bar(x - width, metric_df["mean_auroc"], width=width, label="AUROC", color="#F58518")
+    axes[1].bar(x, metric_df["mean_auprc"], width=width, label="AUPRC", color="#54A24B")
+    axes[1].bar(x + width, metric_df["mean_acc"], width=width, label="Accuracy", color="#B279A2")
+    axes[1].set_xticks(x)
+    axes[1].set_xticklabels(metric_df["baseline"], rotation=25)
+    axes[1].set_ylim(0.0, 1.0)
+    axes[1].set_title("Mean Probe Metrics by Baseline")
+    axes[1].legend()
+
+    fig.tight_layout()
+    fig.savefig(plot_path, dpi=180)
+    plt.close(fig)
+    return plot_path
+
+
 @flow(name="ad-screening-experiments")
 def run_flow(config_path: Path, results_dir: Path, max_runs: int | None = None) -> Path:
     cfg = yaml.safe_load(config_path.read_text())
@@ -374,6 +443,7 @@ def run_flow(config_path: Path, results_dir: Path, max_runs: int | None = None) 
             replicate=int(entry["replicate"]),
             annotation_counts=ann_counts,
         )
+        labels_df = _normalize_label_schema(labels_df)
 
         run_signature = {
             "git_sha": git_sha,
@@ -491,17 +561,23 @@ def run_flow(config_path: Path, results_dir: Path, max_runs: int | None = None) 
 
     summary_df = pd.DataFrame(rows)
     summary_df.to_csv(root_dir / "run_matrix_summary.csv", index=False)
+    write_summary_graph(root_dir=root_dir, summary_df=summary_df)
     return root_dir
 
 
 def main() -> None:
     args = parse_args()
     ensure_bootstrap_data(bootstrap_data=args.bootstrap_data)
-    # Use the underlying function to avoid requiring a local Prefect API server.
-    runner = getattr(run_flow, "fn", run_flow)
-    out = runner(config_path=args.config, results_dir=args.results_dir, max_runs=args.max_runs)
+    if args.local_server:
+        os.environ.setdefault("PREFECT_API_URL", "http://127.0.0.1:4200/api")
+        out = run_flow(config_path=args.config, results_dir=args.results_dir, max_runs=args.max_runs)
+    else:
+        # Use the underlying function to avoid requiring a local Prefect API server.
+        runner = getattr(run_flow, "fn", run_flow)
+        out = runner(config_path=args.config, results_dir=args.results_dir, max_runs=args.max_runs)
     print(f"Wrote: {out}")
     print(f"Wrote: {out / 'run_matrix_summary.csv'}")
+    print(f"Wrote: {out / 'run_matrix_summary.png'}")
 
 
 if __name__ == "__main__":
