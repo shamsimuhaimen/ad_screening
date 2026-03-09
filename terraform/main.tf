@@ -52,7 +52,7 @@ resource "google_compute_instance" "vscode_cpu" {
   }
 
   scheduling {
-    on_host_maintenance = "TERMINATE"
+    on_host_maintenance = "MIGRATE"
     automatic_restart   = true
     preemptible         = false
   }

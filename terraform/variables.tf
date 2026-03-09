@@ -1,7 +1,7 @@
 variable "project_id" {
   description = "GCP project where the CPU instance will be created."
   type        = string
-  default     = "ai-drug-discovery-uoft-2026"
+  default     = "ad-screening-489618"
 }
 
 variable "region" {

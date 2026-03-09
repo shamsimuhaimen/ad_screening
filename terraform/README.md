@@ -9,7 +9,7 @@ Boot disk is 30GB `pd-standard` (can align with free-tier standard disk allowanc
 ## Prerequisites
 - Terraform >= 1.3
 - `gcloud` authenticated to the correct account/project
-- APIs enabled in `ai-drug-discovery-uoft-2026`:
+- APIs enabled in `ad-screening-489618`:
   - `compute.googleapis.com`
 
 ## Apply
@@ -23,7 +23,7 @@ terraform apply
 ## Connect
 Use OS Login:
 ```bash
-gcloud compute ssh vscode-cpu --zone northamerica-northeast2-a --project ai-drug-discovery-uoft-2026
+gcloud compute ssh vscode-cpu --zone northamerica-northeast2-a --project ad-screening-489618
 ```
 
 ## Destroy
