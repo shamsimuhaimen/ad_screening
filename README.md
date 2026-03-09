@@ -8,6 +8,19 @@
 
 After modifying deps in `environment.yml`,  sync env with: `conda env update -n ad_screening -f environment.yml --prune`
 
+## Local Postgres (Docker)
+- Files live under [`docker/`](/mnt/perma/ad_screening/docker).
+- Copy the env template: `cp docker/.env.postgres.example docker/.env.postgres`
+- Start Postgres: `docker compose -f docker/docker-compose.yml up -d`
+- Stop it: `docker compose -f docker/docker-compose.yml down`
+
+This setup uses one shared Postgres database, `tracking`, for both MLflow and Prefect.
+They keep separate tables in the same database.
+
+Connection examples:
+- MLflow backend URI: `postgresql://ad_screening:pg_password@127.0.0.1:5432/tracking`
+- Prefect API database URI: `postgresql+asyncpg://ad_screening:pg_password@127.0.0.1:5432/tracking`
+
 ## Data
 Download and extract all datasets: `python src/scripts/download_data.py`
 
