@@ -17,48 +17,49 @@
 \section*{Part I: Introduction and Background (1 Page Maximum)}
 
 \subsection*{1. Research Question \& Significance}
-\textbf{Research question.} Do AD-implicated genes show stronger and more specific signal than non-AD controls in (i) DrugCLIP embedding neighborhoods and (ii) independent PPI topology, and can this be used to prioritize plausible drug candidates?
+\textbf{Research question} Do AD-implicated genes show stronger and more specific signal than non-AD controls in (i) DrugCLIP embedding neighborhoods and (ii) independent PPI topology, and can this be used to prioritize plausible drug candidates?
 
-\textbf{Why this matters for AI in drug discovery.} Drug discovery embedding models are usually evaluated on benchmark task performance, but not always on disease-specific biological validity. Our goal is to test whether embedding-derived structure is aligned with AD biology rather than generic signal. If yes, this supports using embedding + network evidence for disease-focused target prioritization.
+\textbf{Why this matters for AI in drug discovery} Drug discovery embedding models are usually evaluated on benchmark task performance, but not always on disease-specific biological validity. Our goal is to test whether embedding-derived structure is aligned with AD biology rather than generic signal. If yes, this supports using embedding + network evidence for disease-focused target prioritization.
 
 \subsection*{2. Context \& Datasets}
-\textbf{Context.} We combine representation-learning diagnostics and network medicine validation. We use matched controls and degree-matched nulls to avoid inflated claims from graph hubs.
+\textbf{Context} We combine representation-learning diagnostics and network medicine validation. We use matched controls and degree-matched nulls to avoid inflated claims from graph hubs.
 
-\textbf{Datasets used.}
+\textbf{Datasets used}
 \begin{itemize}
-    \item DrugCLIP protein embeddings and names (THU-ATOM DrugCLIP data) \cite{adGwas2025, drugclipData2024}.
-    \item AD gene list from the Askenazi 2023 supplement (processed into \texttt{data/processed/ad\_genes.csv}).
-    \item Allen Human Brain RNA-seq atlas for expression-based AD/control label construction \cite{allenAtlas2012}.
-    \item STRING human PPI (v12) for topology and degree-matched controls \cite{string2018, string2019}.
-    \item DrugCLIP target ChEMBL human assay tables (from \texttt{targets.zip}) for candidate-drug retrieval.
+    \item DrugCLIP protein embeddings and protein names from THU-ATOM DrugCLIP data \cite{adGwas2025, drugclipData2024}.
+    \item AD gene list derived from the Askenazi 2023 supplement.
+    \item Allen Human Brain RNA-seq donor 9861 bulk expression release, used for expression-based AD/control label construction \cite{allenAtlas2012}.
+    \item HGNC complete symbol mapping table for gene-symbol to UniProt harmonization.
+    \item STRING v12 human protein metadata and interaction tables, used to build the PPI graph for topology and degree-matched controls \cite{string2018, string2019}.
+    \item DrugCLIP target assay archive for candidate-drug retrieval.
 \end{itemize}
 
-\textbf{Current status before Milestone 2.} We already observe moderate signal: weak embedding-only classification lift, but stronger and statistically significant PPI concentration under degree-matched permutation controls.
+\textbf{Current status before Milestone 2} The latest multiseed Prefect run supports a real AD-vs-null signal in held-out probe metrics and in independent PPI topology. Observed AD beats both label-shuffle and matched random-set baselines on AUROC/AUPRC and shows stronger PPI concentration and cosine-neighbor AD enrichment. The main remaining gap is that the random-embedding ablation is not yet fully propagated through the reported network summaries, so that control still needs a clean end-to-end validation pass.
 
 \section*{Part II: Proposed Methods and Setup (2 Pages)}
 
 \subsection*{3. Proposed Methods}
-\textbf{Method A: AD-vs-control prediction head on embeddings.} We aggregate multiple embedding rows to one gene vector and train a small FFN (768$\rightarrow$64$\rightarrow$1). We compare three ablations: embedding, random-embedding, and label-shuffle.
+\textbf{Method A: AD-vs-control prediction head on embeddings} We aggregate multiple embedding rows to one gene vector and train a small FFN (768$\rightarrow$64$\rightarrow$1). We compare three ablations: embedding, random-embedding, and label-shuffle.
 
-\textbf{Method B: Embedding-to-network biological validation.} We test whether AD labels are topologically concentrated in PPI with degree-matched permutation nulls. Metrics include AD-AD edge enrichment, AD largest connected component, and AD-neighbor fraction.
+\textbf{Method B: Embedding-to-network biological validation} We test whether AD labels are topologically concentrated in PPI with degree-matched permutation nulls. Metrics include AD-AD edge enrichment, AD largest connected component, and AD-neighbor fraction.
 
-\textbf{Method C: Cosine-neighbor/PPI coupling by hop depth.} For $k\in\{1,2,5\}$ cosine neighbors, we compare AD-seed vs control-seed neighbor properties (AD fraction and PPI coupling), then evaluate significance with degree-matched permutation.
+\textbf{Method C: Cosine-neighbor/PPI coupling by hop depth} For $k\in\{1,2,5\}$ cosine neighbors, we compare AD-seed vs control-seed neighbor properties (AD fraction and PPI coupling), then evaluate significance with degree-matched permutation.
 
-\textbf{Method D: Candidate drug retrieval and characterization.} We retrieve potent compounds from DrugCLIP ChEMBL target tables for AD-overlap targets (with alias mapping), rank compounds by AD-target coverage and potency support, then characterize phase/potency/target distributions.
+\textbf{Method D: Candidate drug retrieval and characterization} We retrieve potent compounds from DrugCLIP ChEMBL target tables for AD-overlap targets (with alias mapping), rank compounds by AD-target coverage and potency support, then characterize phase/potency/target distributions.
 
-\textbf{Innovation claim.} The novelty is not a new foundation model; it is a disease-specific validation stack that links embedding geometry to independent biological topology using strict controls (label-shuffle, random-embedding, degree-matched nulls).
+\textbf{Innovation claim} The novelty is not a new foundation model; it is a disease-specific validation stack that links embedding geometry to independent biological topology using strict controls (label-shuffle, random-embedding, degree-matched nulls).
 
 \subsection*{4. Data and Preprocessing}
-\textbf{ID harmonization.} Gene symbols are standardized to uppercase and mapped to UniProt accessions (HGNC mapping) for embedding joins.
+\textbf{ID harmonization} Gene symbols are standardized to uppercase and mapped to UniProt accessions (HGNC mapping) for embedding joins.
 
-\textbf{Leakage prevention.}
+\textbf{Leakage prevention}
 \begin{itemize}
     \item Aggregation to one embedding per gene is done \emph{before} train/test splitting.
     \item Splits are fixed by saved split files for fair ablation comparison.
     \item PPI analyses use degree-matched permutation controls to reduce hub-driven artifacts.
 \end{itemize}
 
-\textbf{Filtering and thresholds.}
+\textbf{Filtering and thresholds}
 \begin{itemize}
     \item PPI analyses use STRING combined score threshold (default 700 for high confidence).
     \item Drug retrieval keeps potency-supported rows (default: pChEMBL $\geq 6$ or standard value $\leq$ 1000 nM where applicable).
@@ -68,59 +69,62 @@
 \begin{figure}[h]
     \centering
     \includegraphics[width=\linewidth]{images/information_flow.png}
-    \caption{Architecture and information flow used in Milestone 1 experiments.}
+    \caption{Architecture and information flow used in Milestone 1 experiments}
 \end{figure}
 
 \subsection*{6. Experimental Setup \& Baselines}
-\textbf{Primary metrics.}
+\textbf{Primary metrics}
 \begin{itemize}
     \item Predictor: test AUROC, AUPRC, accuracy (multi-seed mean/stdev).
     \item PPI topology: AD-AD enrichment, AD LCC size, AD-neighbor fraction with permutation p-values.
     \item Hop analysis: AD-control delta at $k=1,2,5$ with degree-matched permutation p-values.
 \end{itemize}
 
-\textbf{Baselines locked in.}
+\textbf{Baselines locked in}
 \begin{itemize}
-    \item Random embedding baseline.
     \item Label-shuffle baseline.
+    \item Matched random non-AD set baseline.
     \item Degree-matched permutation null for PPI and hop analyses.
+    \item Random-embedding ablation in the probe pipeline; full network-level validation still being finalized.
     \item Seed policy: 10 seeds for routine development/debugging runs, 30 seeds for final reported stability estimates.
 \end{itemize}
 
-\textbf{Current quantitative snapshot.}
+\textbf{Current quantitative snapshot}
 \begin{itemize}
-    \item Multi-seed embedding AUROC: 0.524 (embedding) vs 0.484 (random embedding) vs 0.516 (label-shuffle).
-    \item Degree-matched PPI: AD-AD enrichment $\approx$ 1.29x, p $\approx$ 0.0033; AD-LCC p $\approx$ 0.0033.
-    \item Cosine/PPI hops: AD-neighbor fraction is consistently higher for AD seeds; significant under degree-matched permutation in current runs.
-    \item Drug retrieval coverage increased from 2 to 5 AD-overlap targets after alias/composite mapping.
+    \item In the current multiseed bundle, observed AD probe performance is above both null baselines: mean AUROC $=0.533$ and mean AUPRC $=0.461$ versus $\approx 0.501$ AUROC and $\approx 0.345$ AUPRC for both label-shuffle and matched random-set baselines.
+    \item PPI topology remains the strongest signal: observed AD-AD edge enrichment is $\approx 1.29\times$ versus $\approx 0.99\times$ under nulls; AD largest connected component size is $605$ versus $\approx 419$ under nulls; mean AD-neighbor fraction is $0.439$ versus $\approx 0.332$ under nulls.
+    \item Cosine/PPI hop analyses are directionally consistent with AD-specific local structure: AD-neighbor fraction deltas are positive at $k=1,2,5$ ($0.103$, $0.098$, $0.052$) and are near zero under the null baselines.
+    \item Hypothesis testing on the strongest topology and hop metrics gives empirical $p \approx 0.024$ but BH-FDR $q \approx 0.062$, so the current evidence is strong and consistent but still just above a strict $q<0.05$ cutoff.
+    \item After improving synonym and composite target-name resolution, the number of AD-relevant targets with retrievable compound evidence increased from 2 to 5.
+    \item The current multiseed Prefect experiment bundle took approximately 2 hours and 12 minutes end-to-end, using development-scale settings of 10 seeds and 100 degree-matched permutations rather than a larger final-reporting run.
 \end{itemize}
 
 \subsection*{7. Timeline to Milestone 2}
 \textbf{Week of March 8--14, 2026}
 \begin{itemize}
-    \item Freeze data snapshots and rerun all key analyses at final permutation depth.
-    \item Owner: Muhaimen (pipeline + experiment reproducibility), Dariia (run audits).
+    \item TODO
+    \item TODO
 \end{itemize}
 
 \textbf{Week of March 15--21, 2026}
 \begin{itemize}
-    \item Expand AD target coverage and finalize candidate-drug characterization tables.
-    \item Owner: Eunice (biological curation), Oleksii (data joins and QC).
+    \item TODO
+    \item TODO
 \end{itemize}
 
 \textbf{Week of March 22--28, 2026}
 \begin{itemize}
-    \item Final ablation tables/figures and robustness appendix (threshold sweeps, split sensitivity).
-    \item Owner: Muhaimen + Dariia.
+    \item TODO
+    \item TODO
 \end{itemize}
 
 \textbf{Week of March 29--April 4, 2026}
 \begin{itemize}
-    \item Draft final milestone narrative integrating methods, controls, and biological interpretation.
-    \item Owner: Eunice + Oleksii.
+    \item TODO
+    \item TODO
 \end{itemize}
 
-\textbf{Anticipated bottlenecks.}
+\textbf{Anticipated bottlenecks}
 \begin{itemize}
     \item Long permutation jobs on large PPI graphs.
     \item Runtime variability from large table parsing and multi-seed reruns.
@@ -128,6 +132,6 @@
 \end{itemize}
 
 \bibliographystyle{unsrturl}
-\bibliography{../loi/loi}
+\bibliography{milestone1}
 
 \end{document}
