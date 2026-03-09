@@ -14,11 +14,11 @@ Download and extract all datasets: `python src/scripts/download_data.py`
 ## Prefect Experiment Workflow
 Default config: `experiments/prefect_experiments.yaml`
 
-Run matrix (one command):
-`python src/scripts/run_prefect_experiments.py`
-
-Run matrix and auto-bootstrap missing downloaded inputs:
+Run matrix and auto-bootstrap missing downloaded inputs (run first time):
 `python src/scripts/run_prefect_experiments.py --bootstrap-data`
+
+Run matrix:
+`python src/scripts/run_prefect_experiments.py`
 
 Smoke test only first N runs:
 Configure experiment matrix size in `experiments/prefect_experiments.yaml`.
