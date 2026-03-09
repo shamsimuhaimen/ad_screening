@@ -3,6 +3,7 @@
 Infra in this directory provisions:
 - `vscode-cpu` Compute Engine VM (`e2-standard-8`)
 - `perma-disk` 200GB persistent SSD mounted at `/mnt/perma`
+- Docker Engine + Docker Compose plugin installed via VM startup script
 
 Boot disk is 30GB `pd-standard` (can align with free-tier standard disk allowance).
 
@@ -19,6 +20,8 @@ terraform init
 terraform plan
 terraform apply
 ```
+
+After the instance boots or is updated, Docker is installed and started. If you want to run `docker` without `sudo`, add your Linux user to the `docker` group separately.
 
 ## Connect
 Use OS Login:

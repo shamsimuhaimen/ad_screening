@@ -92,7 +92,8 @@ resource "google_compute_instance" "vscode_cpu" {
 
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
-    apt-get install -y libgl1 libglib2.0-0 wget
+    apt-get install -y docker.io docker-compose-v2 libgl1 libglib2.0-0 wget
+    systemctl enable --now docker
   EOT
 }
 
