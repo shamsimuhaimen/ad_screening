@@ -23,7 +23,6 @@ import matplotlib
 import numpy as np
 import pandas as pd
 import yaml
-from prefect import flow, task
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -33,16 +32,70 @@ from train_ad_predictor import build_gene_to_uniprot_map, build_label_table
 
 
 DEFAULT_CONFIG = Path("experiments/prefect_experiments.yaml")
+POSTGRES_ENV_FILE = Path("docker/.env.postgres")
+DEFAULT_LOCAL_PREFECT_API_URL = "http://127.0.0.1:4200/api"
+
+
+def _parse_env_file(path: Path) -> dict[str, str]:
+    """Parse a simple KEY=VALUE env file into a dictionary."""
+    values: dict[str, str] = {}
+    if not path.exists():
+        return values
+    for raw_line in path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if key:
+            values[key] = value
+    return values
+
+
+def _bootstrap_prefect_database_env() -> None:
+    """Populate the local Prefect database URL from the Postgres env file when possible."""
+    if os.environ.get("PREFECT_API_DATABASE_CONNECTION_URL"):
+        return
+    pg_env = _parse_env_file(POSTGRES_ENV_FILE)
+    if not pg_env:
+        return
+
+    db = pg_env.get("POSTGRES_DB")
+    user = pg_env.get("POSTGRES_USER")
+    password = pg_env.get("POSTGRES_PASSWORD")
+    if not all([db, user, password]):
+        return
+
+    port = pg_env.get("POSTGRES_PORT", "5432")
+    os.environ["PREFECT_API_DATABASE_CONNECTION_URL"] = f"postgresql+asyncpg://{user}:{password}@127.0.0.1:{port}/{db}"
+
+
+_bootstrap_prefect_database_env()
+
+
+def _bootstrap_prefect_api_url() -> None:
+    """Default Prefect API URL to the local server when the Postgres env file exists."""
+    if os.environ.get("PREFECT_API_URL"):
+        return
+    if POSTGRES_ENV_FILE.exists():
+        os.environ["PREFECT_API_URL"] = DEFAULT_LOCAL_PREFECT_API_URL
+
+
+_bootstrap_prefect_api_url()
+
+from prefect import flow, task
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments for the Prefect experiment runner."""
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     p.add_argument("--results-dir", type=Path, default=Path("results"))
     p.add_argument(
         "--num-workers",
         type=int,
-        default=None,
+        default=8,
         help="Set Prefect thread-pool worker count via PREFECT_TASK_RUNNER_THREAD_POOL_MAX_WORKERS.",
     )
     p.add_argument(
@@ -53,12 +106,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--local-server",
         action="store_true",
-        help="Run with Prefect server orchestration (uses PREFECT_API_URL or defaults to http://127.0.0.1:4200/api).",
+        help="Run with Prefect server orchestration (defaults to http://127.0.0.1:4200/api).",
     )
     return p.parse_args()
 
 
 def _sha256(path: Path) -> str:
+    """Return the SHA-256 digest for a file."""
     h = hashlib.sha256()
     with path.open("rb") as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
@@ -67,6 +121,7 @@ def _sha256(path: Path) -> str:
 
 
 def _safe_run_capture(cmd: list[str]) -> tuple[int, str, str]:
+    """Run a command and return its exit code, stdout, and stderr without raising."""
     try:
         proc = subprocess.run(cmd, check=False, text=True, capture_output=True)
         return proc.returncode, proc.stdout, proc.stderr
@@ -75,6 +130,7 @@ def _safe_run_capture(cmd: list[str]) -> tuple[int, str, str]:
 
 
 def _file_manifest(path: Path) -> dict[str, Any]:
+    """Build a reproducibility manifest record for a single file path."""
     rec: dict[str, Any] = {"path": str(path)}
     if not path.exists():
         rec["exists"] = False
@@ -92,6 +148,7 @@ def _file_manifest(path: Path) -> dict[str, Any]:
 
 
 def write_dependency_manifest(root_dir: Path) -> Path:
+    """Write environment and dependency metadata for the current run."""
     manifest_path = root_dir / "dependency_manifest.json"
     dep_files = [Path("environment.yml"), Path("pyproject.toml"), Path("requirements.txt")]
 
@@ -119,6 +176,7 @@ def write_dependency_manifest(root_dir: Path) -> Path:
 
 
 def _git_commit() -> str:
+    """Return the current git commit SHA, or 'unknown' if unavailable."""
     try:
         out = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -132,11 +190,13 @@ def _git_commit() -> str:
 
 
 def _stable_hash(payload: dict[str, Any]) -> str:
+    """Create a short stable hash for a JSON-serializable payload."""
     text = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
 
 
 def _required_download_inputs() -> list[Path]:
+    """List downloaded inputs that must exist before experiments can run."""
     return [
         Path("data/raw/bulk_rna_seq_human_brain/Genes.csv"),
         Path("data/raw/bulk_rna_seq_human_brain/SampleAnnot.csv"),
@@ -148,6 +208,7 @@ def _required_download_inputs() -> list[Path]:
 
 
 def ensure_bootstrap_data(bootstrap_data: bool) -> None:
+    """Ensure required downloaded inputs exist, optionally fetching them on demand."""
     missing = [p for p in _required_download_inputs() if not p.exists()]
     if not missing:
         return
@@ -156,8 +217,7 @@ def ensure_bootstrap_data(bootstrap_data: bool) -> None:
         if len(missing) > 4:
             names += ", ..."
         raise FileNotFoundError(
-            "Missing downloaded inputs required by Prefect workflow: "
-            f"{names}. Re-run with --bootstrap-data."
+            "Missing downloaded inputs required by Prefect workflow: " f"{names}. Re-run with --bootstrap-data."
         )
     cmd = ["python", "src/scripts/download_data.py"]
     proc = subprocess.run(cmd, check=False, text=True, capture_output=True)
@@ -174,6 +234,7 @@ def ensure_bootstrap_data(bootstrap_data: bool) -> None:
 
 
 def _stratified_split(y: np.ndarray, test_size: float, seed: int) -> tuple[np.ndarray, np.ndarray]:
+    """Create a simple stratified train/test split over binary labels."""
     rng = np.random.default_rng(seed)
     idx_all = np.arange(len(y))
     pos = idx_all[y == 1].copy()
@@ -188,6 +249,7 @@ def _stratified_split(y: np.ndarray, test_size: float, seed: int) -> tuple[np.nd
 
 
 def _load_annotation_counts(path: Path | None) -> pd.Series | None:
+    """Load per-gene annotation counts if a valid CSV is available."""
     if path is None or not path.exists():
         return None
     ann = pd.read_csv(path)
@@ -204,6 +266,7 @@ def _load_annotation_counts(path: Path | None) -> pd.Series | None:
 
 
 def _normalize_label_schema(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize label columns to the schema expected by downstream tasks."""
     out = df.copy()
     # gene_id is metadata-only in this pipeline; use gene_symbol everywhere downstream.
     if "gene_id" in out.columns:
@@ -220,6 +283,7 @@ def _build_baseline_labels(
     replicate: int,
     annotation_counts: pd.Series | None,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Generate baseline labels and metadata for one matrix entry."""
     rng = np.random.default_rng(seed * 100_000 + replicate)
     labels = observed_labels.copy()
     n_ad = int((labels["y"] == 1).sum())
@@ -286,7 +350,10 @@ def _build_baseline_labels(
     raise ValueError(f"Unsupported baseline: {baseline_name}")
 
 
-def prepare_cohort_artifacts(cohort: dict[str, Any], annotation_counts_csv: str | None, root_dir: Path) -> dict[str, str]:
+def prepare_cohort_artifacts(
+    cohort: dict[str, Any], annotation_counts_csv: str | None, root_dir: Path
+) -> dict[str, str]:
+    """Materialize cohort-specific inputs used across matrix runs."""
     cohort_name = cohort["name"]
     out_dir = root_dir / "cohorts" / cohort_name
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -332,6 +399,7 @@ def run_classifier_probe(
     analysis_cfg: dict[str, Any],
     out_dir: Path,
 ) -> dict[str, Any]:
+    """Train and evaluate the embedding probe for one run configuration."""
     gene_df, x = build_gene_embeddings(
         labels_csv=Path(labels_csv),
         mapping_csv=Path(mapping_csv),
@@ -387,6 +455,7 @@ def run_classifier_probe(
 
 
 def run_script(cmd: list[str], cwd: str, out_log: Path) -> int:
+    """Run a subprocess, log stdout/stderr, and raise on failure."""
     proc = subprocess.run(cmd, cwd=cwd, check=False, text=True, capture_output=True)
     out_log.write_text(proc.stdout + "\n\nSTDERR:\n" + proc.stderr)
     if proc.returncode != 0:
@@ -395,6 +464,7 @@ def run_script(cmd: list[str], cwd: str, out_log: Path) -> int:
 
 
 def _build_matrix(cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    """Expand the experiment config into a concrete run matrix."""
     runs: list[dict[str, Any]] = []
     for cohort in cfg["cohorts"]:
         for ablation in cfg["ablations"]:
@@ -417,7 +487,19 @@ def _build_matrix(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     return runs
 
 
+def _matrix_submission_batch_size() -> int:
+    """Derive the parent-flow submission batch size from the configured worker cap."""
+    raw = os.environ.get("PREFECT_TASK_RUNNER_THREAD_POOL_MAX_WORKERS")
+    if raw is None:
+        return 1
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 1
+
+
 def write_summary_graph(root_dir: Path, summary_df: pd.DataFrame) -> Path:
+    """Write a summary plot and baseline rollup for completed matrix runs."""
     plot_path = root_dir / "run_matrix_summary.png"
 
     if summary_df.empty:
@@ -470,22 +552,28 @@ def write_summary_graph(root_dir: Path, summary_df: pd.DataFrame) -> Path:
 
 
 @task(name="prepare-cohort-artifacts")
-def prepare_cohort_artifacts_task(cohort: dict[str, Any], annotation_counts_csv: str | None, root_dir: Path) -> dict[str, str]:
+def prepare_cohort_artifacts_task(
+    cohort: dict[str, Any], annotation_counts_csv: str | None, root_dir: Path
+) -> dict[str, str]:
+    """Prefect task wrapper for cohort artifact preparation."""
     return prepare_cohort_artifacts(cohort=cohort, annotation_counts_csv=annotation_counts_csv, root_dir=root_dir)
 
 
 @task(name="write-dependency-manifest")
 def write_dependency_manifest_task(root_dir: Path) -> str:
+    """Prefect task wrapper for dependency manifest generation."""
     return str(write_dependency_manifest(root_dir=root_dir))
 
 
 @task(name="ensure-bootstrap-data")
 def ensure_bootstrap_data_task(bootstrap_data: bool) -> None:
+    """Prefect task wrapper for input bootstrap checks."""
     ensure_bootstrap_data(bootstrap_data=bootstrap_data)
 
 
 @task(name="materialize-run-labels")
 def materialize_run_labels_task(entry: dict[str, Any], art: dict[str, str], run_dir: Path) -> dict[str, Any]:
+    """Materialize the labels CSV and baseline metadata for one run."""
     observed_labels = pd.read_csv(art["labels_csv"])
     ann_counts = _load_annotation_counts(Path(art["annotation_counts_csv"]))
     labels_df, baseline_meta = _build_baseline_labels(
@@ -509,6 +597,7 @@ def run_classifier_probe_task(
     analysis_cfg: dict[str, Any],
     run_dir: Path,
 ) -> dict[str, Any]:
+    """Prefect task wrapper for the classifier probe analysis."""
     return run_classifier_probe(
         labels_csv=str(labels_artifact["labels_path"]),
         mapping_csv=art["mapping_csv"],
@@ -526,6 +615,7 @@ def run_ppi_signal_task(
     entry: dict[str, Any],
     run_dir: Path,
 ) -> str:
+    """Run the PPI enrichment analysis script for one matrix entry."""
     ppi_dir = run_dir / "ppi_signal"
     ppi_dir.mkdir(parents=True, exist_ok=True)
     ppi_cmd = [
@@ -566,6 +656,7 @@ def run_cosine_hops_task(
     entry: dict[str, Any],
     run_dir: Path,
 ) -> str:
+    """Run the cosine-over-PPI-hops analysis script for one matrix entry."""
     hops_dir = run_dir / "cosine_hops"
     hops_dir.mkdir(parents=True, exist_ok=True)
     hops_cmd = [
@@ -614,6 +705,7 @@ def write_run_manifest_task(
     art: dict[str, str],
     run_dir: Path,
 ) -> str:
+    """Write a reproducibility manifest for one matrix run."""
     labels_path = Path(labels_artifact["labels_path"])
     manifest = {
         "run_id": run_id,
@@ -649,6 +741,7 @@ def build_summary_row_task(
     ppi_summary_path: str,
     hops_summary_path: str,
 ) -> dict[str, Any]:
+    """Combine run outputs into one summary row for the matrix report."""
     row = {
         "run_id": run_id,
         **entry,
@@ -678,6 +771,7 @@ def build_summary_row_task(
 
 @task(name="write-summary-artifacts")
 def write_summary_artifacts_task(root_dir: Path, rows: list[dict[str, Any]]) -> None:
+    """Write CSV and plot summaries for all completed matrix runs."""
     summary_df = pd.DataFrame(rows)
     summary_df.to_csv(root_dir / "run_matrix_summary.csv", index=False)
     write_summary_graph(root_dir=root_dir, summary_df=summary_df)
@@ -685,6 +779,7 @@ def write_summary_artifacts_task(root_dir: Path, rows: list[dict[str, Any]]) -> 
 
 @task(name="aggregate-experiment-results")
 def aggregate_experiment_results_task(run_root: Path) -> dict[str, str]:
+    """Run the post-processing aggregation script for a completed experiment root."""
     out_log = run_root / "aggregate_experiment_results.log"
     cmd = [
         "python",
@@ -709,6 +804,7 @@ def run_matrix_entry_flow(
     root_dir: Path,
     dependency_manifest_path: str,
 ) -> dict[str, Any]:
+    """Execute one matrix entry end to end and return its summary row."""
     run_signature = {
         "git_sha": git_sha,
         **entry,
@@ -777,6 +873,7 @@ def run_matrix_entry_task(
     root_dir: Path,
     dependency_manifest_path: str,
 ) -> dict[str, Any]:
+    """Prefect task wrapper that launches a single matrix-entry subflow."""
     return run_matrix_entry_flow(
         entry=entry,
         art=art,
@@ -794,6 +891,7 @@ def run_flow(
     bootstrap_data: bool = False,
     aggregate_results: bool = True,
 ) -> Path:
+    """Run the full experiment matrix and write summary artifacts."""
     ensure_bootstrap_data_task.submit(bootstrap_data=bootstrap_data).result()
     cfg = yaml.safe_load(config_path.read_text())
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -817,19 +915,22 @@ def run_flow(
 
     matrix = _build_matrix(cfg)
 
-    row_futures = []
-    for entry in matrix:
-        row_futures.append(
-            run_matrix_entry_task.submit(
-                entry=entry,
-                art=cohort_artifacts[entry["cohort"]],
-                analysis_cfg=cfg["analysis"],
-                git_sha=git_sha,
-                root_dir=root_dir,
-                dependency_manifest_path=dep_manifest_path,
+    rows = []
+    batch_size = _matrix_submission_batch_size()
+    for start in range(0, len(matrix), batch_size):
+        batch_futures = []
+        for entry in matrix[start : start + batch_size]:
+            batch_futures.append(
+                run_matrix_entry_task.submit(
+                    entry=entry,
+                    art=cohort_artifacts[entry["cohort"]],
+                    analysis_cfg=cfg["analysis"],
+                    git_sha=git_sha,
+                    root_dir=root_dir,
+                    dependency_manifest_path=dep_manifest_path,
+                )
             )
-        )
-    rows = [f.result() for f in row_futures]
+        rows.extend(f.result() for f in batch_futures)
 
     write_summary_artifacts_task.submit(root_dir=root_dir, rows=rows).result()
     if aggregate_results:
@@ -838,13 +939,14 @@ def run_flow(
 
 
 def main() -> None:
+    """CLI entry point for running the Prefect experiment workflow."""
     args = parse_args()
     if args.num_workers is not None:
         if args.num_workers < 1:
             raise ValueError("--num-workers must be >= 1")
         os.environ["PREFECT_TASK_RUNNER_THREAD_POOL_MAX_WORKERS"] = str(args.num_workers)
     if args.local_server:
-        os.environ.setdefault("PREFECT_API_URL", "http://127.0.0.1:4200/api")
+        os.environ.setdefault("PREFECT_API_URL", DEFAULT_LOCAL_PREFECT_API_URL)
     out = run_flow(
         config_path=args.config,
         results_dir=args.results_dir,

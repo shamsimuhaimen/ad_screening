@@ -13,4 +13,5 @@ dependencies:
   - seaborn
   - pyyaml
   - pip:
+      - asyncpg
       - prefect

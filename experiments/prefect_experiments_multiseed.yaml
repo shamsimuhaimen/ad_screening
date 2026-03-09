@@ -12,14 +12,21 @@ baselines:
   - name: observed_ad
     replicates: 1
   - name: permute_labels
-    replicates: 100
+    replicates: 20
   - name: random_matched_set
-    replicates: 100
+    replicates: 20
 
 seeds:
   - 42
   - 43
   - 44
+  - 45
+  - 46
+  - 47
+  - 48
+  - 49
+  - 50
+  - 51
 
 analysis:
   probe_test_size: 0.2
@@ -31,7 +38,7 @@ analysis:
   ppi_target_col: gene2
   ppi_score_col: combined_score
   ppi_min_score: 700
-  n_permutations: 500
+  n_permutations: 100
   permute_mode: degree_matched
   degree_bins: 10
   hops: "1,2,5"

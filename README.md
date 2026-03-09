@@ -11,15 +11,18 @@ After modifying deps in `environment.yml`,  sync env with: `conda env update -n 
 ## Local Postgres (Docker)
 - Files live under [`docker/`](/mnt/perma/ad_screening/docker).
 - Copy the env template: `cp docker/.env.postgres.example docker/.env.postgres`
-- Start Postgres: `docker compose -f docker/docker-compose.yml up -d`
+- Start Postgres: `sudo docker compose -f docker/docker-compose.yml up -d`
 - Stop it: `docker compose -f docker/docker-compose.yml down`
 
 This setup uses one shared Postgres database, `tracking`, for both MLflow and Prefect.
 They keep separate tables in the same database.
 
 Connection examples:
-- MLflow backend URI: `postgresql://ad_screening:pg_password@127.0.0.1:5432/tracking`
-- Prefect API database URI: `postgresql+asyncpg://ad_screening:pg_password@127.0.0.1:5432/tracking`
+- MLflow backend URI: `postgresql://ad_screening:pg_password_123@127.0.0.1:5432/tracking`
+- Prefect API database URI: `postgresql+asyncpg://ad_screening:pg_password_123@127.0.0.1:5432/tracking`
+
+Start Prefect against that Postgres instance instead of SQLite:
+`bash src/scripts/start_prefect_server.sh`
 
 ## Data
 Download and extract all datasets: `python src/scripts/download_data.py`
@@ -32,6 +35,8 @@ Run matrix and auto-bootstrap missing downloaded inputs (run first time):
 
 Run matrix:
 `python src/scripts/run_prefect_experiments.py`
+
+The runner auto-loads `docker/.env.postgres` and sets `PREFECT_API_DATABASE_CONNECTION_URL` plus `PREFECT_API_URL=http://127.0.0.1:4200/api` before importing Prefect, so local runs use the Docker Postgres-backed Prefect server by default when that file exists.
 
 Smoke test only first N runs:
 Configure experiment matrix size in `experiments/prefect_experiments.yaml`.
