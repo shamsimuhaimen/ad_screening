@@ -1,0 +1,175 @@
+\documentclass{article}
+
+\usepackage[english]{babel}
+\usepackage[letterpaper,top=2cm,bottom=2cm,left=2cm,right=2cm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage[colorlinks=true, allcolors=blue]{hyperref}
+\setlength{\parindent}{0pt}
+
+\title{Probing Biological Signal in DrugCLIP Protein Embeddings: A Case Study in Alzheimer's Disease}
+\author{Eunice Chen, Muhaimen Shamsi, Dariia Kucheruk, Oleksii Nakhod}
+\date{Milestone 1}
+
+\begin{document}
+\maketitle
+
+\section*{Part I: Introduction and Background}
+
+\subsection*{1. Research Question \& Significance}
+Recent advances in contrastive learning have enabled the development of joint embedding spaces for proteins and small molecules. Models such as DrugCLIP \cite{adGwas2025,drugclipData2024} learn representations that align protein binding pockets with candidate ligands, enabling large-scale virtual screening without explicit molecular docking. This approach aligns with the growing need for precision drug development in Alzheimer's disease (AD) to address high clinical trial failure rates. However, it remains unclear to what extent these learned embeddings capture biologically meaningful structure beyond the specific objective they were trained on.
+
+The goal of this project is to test the following hypothesis:
+
+Do DrugCLIP protein embeddings encode biologically meaningful disease-related structure, specifically for Alzheimer's-associated proteins expressed in the hippocampus? \cite{adRegion2019,adRegion2022}
+
+We investigate whether Alzheimer's-related proteins can be distinguished from other proteins using only their DrugCLIP embeddings. Rather than relying on unsupervised clustering, we frame this as a representation probing task: if a simple classifier trained on embedding vectors can reliably identify Alzheimer's-associated proteins, this would suggest that the embeddings contain latent disease-related information.
+
+Understanding the biological content of learned molecular representations is important for AI-driven drug discovery \cite{adDrug2025}. Embedding models such as DrugCLIP are increasingly used as fast surrogates for binding prediction \cite{seaadPreprint2025} in virtual screening pipelines. If these representations encode biologically meaningful relationships among proteins, they could support additional tasks such as disease target prioritization, functional similarity search, and pathway-level analysis.
+
+Our project focuses on evaluating the biological signal present in these representations through supervised learning, statistical testing, and embedding-space analysis.
+
+\subsection*{2. Context \& Datasets}
+DrugCLIP is a contrastive representation learning framework that maps protein binding pockets \cite{method2018} and small molecules into a shared embedding space. The model is trained on large-scale protein-ligand interaction data \cite{drugbank2018,chembl2019}, enabling rapid retrieval of candidate ligands using cosine similarity between embeddings.
+
+Although the training objective focuses on protein-ligand compatibility, the resulting embeddings may implicitly encode structural or functional similarities among proteins. If this is the case, proteins associated with the same disease may occupy nearby regions in embedding space.
+
+To test this hypothesis, we construct a dataset combining Alzheimer's disease annotations \cite{seaad2024} with brain-region expression data. The primary data sources include:
+\begin{itemize}
+    \item Allen Brain Atlas \cite{allenAtlas2012}: provides transcriptomic measurements across human brain regions. We use this dataset to identify genes expressed in the hippocampus, a region strongly affected in early Alzheimer's disease pathology.
+    \item GWAS Catalog \cite{disgenet2023} and Alzheimer's genetic studies \cite{lambert2013}: provide lists of genes associated with Alzheimer's disease through genome-wide association studies and related genetic evidence.
+    \item Protein structure databases (PDB \cite{pdb2000}): used for mapping protein names from GWAS-derived gene/protein lists.
+    \item HGNC complete symbol mapping table \cite{hgncCompleteSet}: used to map gene symbols to UniProt accessions for embedding joins.
+\end{itemize}
+
+From these resources we construct a labeled dataset of proteins:
+\begin{itemize}
+    \item Positive class: proteins associated with Alzheimer's disease and expressed in the hippocampus.
+    \item Negative class: proteins expressed in the hippocampus but not currently associated with Alzheimer's disease.
+\end{itemize}
+For each protein we retrieve a DrugCLIP embedding vector, which serves as the feature representation for downstream machine learning analysis.
+
+\section*{Part II: Proposed Methods and Setup}
+
+\subsection*{3. Proposed Methods}
+Our objective is to determine whether Alzheimer's-related biological signal exists in DrugCLIP embeddings. We approach this as a representation evaluation problem using supervised classification and embedding-space analysis.
+
+\subsubsection*{3.1 Embedding Retrieval}
+For each protein in the dataset, we obtain structural models from the Protein Data Bank \cite{pdb2000}. Binding pockets are identified \cite{method2018} and encoded using the pretrained DrugCLIP protein encoder to produce dense embedding vectors. This results in a dataset $X \in \mathbb{R}^{N \times d}$, where $N$ is the number of proteins and $d$ is the embedding dimension. Each protein is associated with a binary label $y \in \{0,1\}$ indicating Alzheimer's association.
+
+\subsubsection*{3.2 Classification Probe}
+To test whether embeddings contain disease-related information, we train simple linear classifiers to predict Alzheimer's labels from embedding vectors.
+
+Models considered include:
+\begin{itemize}
+    \item Logistic regression.
+    \item Linear support vector machines (SVM).
+\end{itemize}
+
+We intentionally use simple models so that predictive performance reflects structure already present in the embeddings rather than complex nonlinear modeling. Performance will be evaluated using $k$-fold cross-validation.
+
+Primary evaluation metrics include:
+\begin{itemize}
+    \item ROC-AUC.
+    \item PR-AUC.
+\end{itemize}
+If Alzheimer's proteins occupy a distinct region of embedding space, classifiers should achieve performance significantly above random.
+
+\subsubsection*{3.3 Statistical Validation via Permutation Testing}
+To confirm that classifier performance reflects meaningful signal rather than statistical artifacts, we perform permutation tests.
+
+The procedure is:
+\begin{itemize}
+    \item Randomly shuffle Alzheimer's labels.
+    \item Retrain the classifier on the shuffled dataset.
+    \item Repeat the process multiple times to generate a null distribution of ROC-AUC scores.
+\end{itemize}
+
+We then compare the real model performance against this null distribution. A significant gap indicates that the embeddings contain genuine disease-related information.
+
+\subsubsection*{3.4 Embedding Geometry Analysis}
+Beyond classification accuracy, we analyze the structure of the embedding space to determine whether disease proteins exhibit meaningful geometric organization.
+
+\textbf{Distance structure test}
+\begin{itemize}
+    \item Compute pairwise cosine distances and compare AD--AD pairs versus AD--non-AD pairs.
+    \item If embeddings encode biological similarity, AD--AD pairs should be significantly closer.
+\end{itemize}
+
+\textbf{Nearest-neighbor enrichment}
+\begin{itemize}
+    \item For each Alzheimer's protein, identify its $k$ nearest neighbors in embedding space.
+    \item Measure enrichment for other Alzheimer's proteins and proteins involved in neurodegenerative pathways.
+\end{itemize}
+This analysis tests whether the embedding space groups functionally related proteins.
+
+\subsubsection*{3.5 Visualization}
+To visualize embedding geometry we apply dimensionality reduction methods such as PCA and UMAP. Proteins are projected into two-dimensional space and colored by disease label. These visualizations provide qualitative insight into whether Alzheimer's proteins form coherent regions in the representation space.
+
+\subsection*{4. Data and Preprocessing}
+Dataset construction proceeds as follows:
+\begin{itemize}
+    \item Collect Alzheimer's-associated genes from GWAS studies \cite{disgenet2023,lambert2013} and curated disease databases.
+    \item Filter genes using Allen Brain Atlas expression data to retain those expressed in the hippocampus.
+    \item Map genes to protein structures from PDB.
+    \item Retrieve DrugCLIP embeddings for each protein.
+\end{itemize}
+
+Negative examples are sampled from hippocampus-expressed proteins that lack Alzheimer's disease annotations. To reduce bias from highly studied proteins, we may optionally match negative samples by properties such as expression level or annotation counts.
+
+Model evaluation uses $k$-fold cross-validation, ensuring that proteins in test folds are never used during training. All preprocessing steps involving labels are performed within each fold to avoid information leakage.
+
+\subsection*{5. Information Flow Diagram}
+The computational pipeline for this project is summarized as:
+\begin{enumerate}
+    \item Build AD/control protein labels from disease and expression resources.
+    \item Retrieve or compute DrugCLIP embeddings for labeled proteins.
+    \item Train/evaluate linear probes with cross-validation.
+    \item Run permutation and random-group controls.
+    \item Analyze embedding geometry and report significance.
+\end{enumerate}
+
+Outputs include classifier performance metrics and statistical tests assessing whether Alzheimer's proteins occupy structured regions in embedding space.
+
+\subsection*{6. Experimental Setup \& Baselines}
+Primary evaluation metrics:
+\begin{itemize}
+    \item ROC-AUC.
+    \item PR-AUC.
+\end{itemize}
+
+To ensure results are meaningful, we include several baseline experiments:
+\begin{itemize}
+    \item \textbf{Label permutation baseline}: randomly shuffle labels and repeat classification.
+    \item \textbf{Random protein group baseline}: sample random protein sets of the same size as the Alzheimer's group and repeat distance/neighbor analyses.
+    \item \textbf{Embedding geometry control}: compare distances within the Alzheimer's set to distances within random protein groups.
+\end{itemize}
+
+\subsection*{7. Timeline to Milestone 2}
+\textbf{Week 1}
+\begin{itemize}
+    \item Construct Alzheimer's gene list and retrieve hippocampus expression data.
+    \item Build labeled protein dataset.
+    \item Responsible: Eunice, Dariia.
+\end{itemize}
+
+\textbf{Week 2}
+\begin{itemize}
+    \item Retrieve DrugCLIP embeddings and begin implementing classifier models.
+    \item Responsible: Muhaimen, Oleksii.
+\end{itemize}
+
+\textbf{Week 3}
+\begin{itemize}
+    \item Run cross-validation experiments, perform permutation tests and embedding analyses, and generate visualizations.
+    \item Responsible: Entire team.
+\end{itemize}
+
+Potential computational bottlenecks include embedding generation and repeated permutation experiments, which may require batch processing on available compute resources.
+
+\bibliographystyle{unsrturl}
+\bibliography{milestone1_gdoc}
+
+\end{document}

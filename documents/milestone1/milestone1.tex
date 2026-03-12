@@ -5,6 +5,8 @@
 \usepackage{amsmath}
 \usepackage{graphicx}
 \usepackage[colorlinks=true, allcolors=blue]{hyperref}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit,backgrounds}
 \setlength{\parindent}{0pt}
 
 \title{Milestone 1}
@@ -29,12 +31,12 @@
     \item DrugCLIP protein embeddings and protein names from THU-ATOM DrugCLIP data \cite{adGwas2025, drugclipData2024}.
     \item AD gene list derived from the Askenazi 2023 supplement.
     \item Allen Human Brain RNA-seq donor 9861 bulk expression release, used for expression-based AD/control label construction \cite{allenAtlas2012}.
-    \item HGNC complete symbol mapping table for gene-symbol to UniProt harmonization.
-    \item STRING v12 human protein metadata and interaction tables, used to build the PPI graph for topology and degree-matched controls \cite{string2018, string2019}.
+    \item HGNC complete symbol mapping table for gene-symbol to UniProt harmonization \cite{hgncCompleteSet}.
+    \item STRING v12 human protein metadata and interaction tables, used to build the PPI graph for topology and degree-matched controls \cite{string2025}.
     \item DrugCLIP target assay archive for candidate-drug retrieval.
 \end{itemize}
 
-\textbf{Current status before Milestone 2} The latest multiseed Prefect run supports a real AD-vs-null signal in held-out probe metrics and in independent PPI topology. Observed AD beats both label-shuffle and matched random-set baselines on AUROC/AUPRC and shows stronger PPI concentration and cosine-neighbor AD enrichment. The main remaining gap is that the random-embedding ablation is not yet fully propagated through the reported network summaries, so that control still needs a clean end-to-end validation pass.
+\textbf{Current status before Milestone 2} The latest multiseed workflow run supports a real AD-vs-null signal in held-out probe metrics and in independent PPI topology. Observed AD beats both label-shuffle and matched random-set baselines on AUROC/AUPRC and shows stronger PPI concentration and cosine-neighbor AD enrichment. The main remaining gap is that the random-embedding ablation is not yet fully propagated through the reported network summaries, so that control still needs a clean end-to-end validation pass.
 
 \section*{Part II: Proposed Methods and Setup (2 Pages)}
 
@@ -68,7 +70,82 @@
 \subsection*{5. Information Flow Diagram}
 \begin{figure}[h]
     \centering
-    \includegraphics[width=\linewidth]{images/information_flow.png}
+    \resizebox{\linewidth}{!}{%
+        \begin{tikzpicture}[
+            font=\sffamily,
+            >=Latex,
+            node distance=7mm and 8mm,
+            io/.style={draw, rounded corners=3pt, line width=0.8pt, minimum width=3.4cm, minimum height=0.95cm, align=center, fill=#1, fill opacity=1, text opacity=1},
+            stage/.style={draw, rounded corners=4pt, line width=1pt, minimum width=3.9cm, minimum height=1.2cm, align=center, fill=#1, fill opacity=1, text opacity=1},
+            out/.style={draw, rounded corners=3pt, line width=0.8pt, minimum width=3.5cm, minimum height=0.95cm, align=center, fill=#1, fill opacity=1, text opacity=1},
+            arrow/.style={-{Latex[length=2.5mm]}, line width=0.9pt, draw=black!75, rounded corners=4pt},
+            faint/.style={draw=black!35, dashed, rounded corners=6pt}
+            ]
+
+            % Inputs
+            \node[io=blue!8] (ad) {\textbf{AD seed genes}\\Askenazi supplement};
+            \node[io=blue!8, below=of ad] (rna) {\textbf{Brain expression}\\Allen RNA-seq};
+            \node[io=blue!8, below=of rna] (hgnc) {\textbf{ID crosswalk}\\HGNC $\rightarrow$ UniProt};
+
+            \node[io=green!9, right=28mm of rna] (emb) {\textbf{Protein embeddings}\\DrugCLIP vectors + names};
+            \node[io=green!9, above=of emb] (ppi) {\textbf{Biological network}\\STRING v12 PPI};
+            \node[io=green!9, below=of emb] (chembl) {\textbf{Compound evidence}\\DrugCLIP assay archive};
+
+            % Central preprocessing
+            \node[stage=orange!11, right=26mm of emb] (labels) {\textbf{Label construction}\\AD vs matched control genes\\regional expression filtering};
+            \node[stage=orange!11, below=of labels] (join) {\textbf{Gene--protein join}\\aggregate embedding rows\\to one vector per gene};
+
+            % Analysis row
+            \node[stage=purple!10, right=24mm of labels] (probe) {\textbf{Prediction probe}\\small classifier head\\AUROC, AUPRC, accuracy};
+            \node[stage=purple!10, right=24mm of join] (hops) {\textbf{Embedding / PPI coupling}\\cosine neighbors at $k=1,2,5$\\degree-matched nulls};
+            \node[stage=teal!10, below=of hops] (topology) {\textbf{Network validation}\\AD-AD enrichment, LCC,\\AD-neighbor fraction};
+
+            % Output
+            \node[out=yellow!14, right=23mm of hops] (summary) {\textbf{Evidence bundle}\\embedding signal\\+ topology support\\+ ranked outputs};
+            \node[out=yellow!14, above=of summary] (controls) {\textbf{Controls / ablations}\\label shuffle\\random embedding\\random matched set};
+            \node[out=yellow!14, below=of summary] (drugs) {\textbf{Candidate retrieval}\\potent compounds for\\AD-overlap targets};
+
+            % Routing coordinates
+            \coordinate[right=9mm of hgnc.east] (c-input-low);
+            \coordinate[right=9mm of rna.east] (c-input-mid);
+            \coordinate[right=9mm of ad.east] (c-input-high);
+            \coordinate[right=9mm of emb.east] (c-emb-out);
+            \coordinate[right=10mm of join.east] (c-join-out);
+            \coordinate[right=10mm of ppi.east] (c-ppi-out);
+            \coordinate[left=14mm of summary.west] (c-summary-in);
+            \coordinate[above left=7mm and 14mm of summary.west] (c-summary-in-high);
+            \coordinate[below left=7mm and 14mm of summary.west] (c-summary-in-low);
+
+            % Group boxes
+            \begin{scope}[on background layer]
+                % Arrows
+                \draw[arrow] (ad.east) -- (c-input-high) |- (labels.west);
+                \draw[arrow] (rna.east) -- (c-input-mid) |- (labels.west);
+                \draw[arrow] (hgnc.east) -- (c-input-low) |- (join.west);
+                \draw[arrow] (emb.east) -- ++(8mm,0) |- (join.west);
+                \draw[arrow] (emb.east) -- (c-emb-out) |- ([yshift=4pt]hops.west);
+                \draw[arrow] (labels.south) -- (join.north);
+                \draw[arrow] (ppi.east) -- (c-ppi-out) |- ([yshift=8pt]hops.north);
+                \draw[arrow] (ppi.east) -- (c-ppi-out) |- ([yshift=6pt]topology.north);
+                \draw[arrow] (chembl.east) -- ++(10mm,0) |- (drugs.west);
+
+                \draw[arrow] (join.east) -- (c-join-out) |- ([yshift=-3pt]probe.west);
+                \draw[arrow] (join.east) -- (c-join-out) |- (hops.west);
+                \draw[arrow] (join.east) -- (c-join-out) |- ([yshift=2pt]topology.west);
+
+                \draw[arrow] (probe.east) -- (c-summary-in-high) -- ([yshift=8pt]summary.west);
+                \draw[arrow] (hops.east) -- (c-summary-in) -- (summary.west);
+                \draw[arrow] (topology.east) -- (c-summary-in-low) -- ([yshift=-8pt]summary.west);
+                \draw[arrow] (summary.south) -- (drugs.north);
+                \draw[arrow] (controls.south) -- (summary.north);
+
+                \node[faint, fit=(ad)(rna)(hgnc)(emb)(ppi)(chembl), inner sep=8pt, label={[font=\bfseries\sffamily]above:Input resources}] {};
+                \node[faint, fit=(labels)(join), inner sep=8pt, label={[font=\bfseries\sffamily]above:Preprocessing and alignment}] {};
+                \node[faint, fit=(probe)(hops)(topology), inner sep=8pt, label={[font=\bfseries\sffamily]above:Analysis modules}] {};
+                \node[faint, fit=(controls)(summary)(drugs), inner sep=8pt, label={[font=\bfseries\sffamily]above:Reported outputs}] {};
+            \end{scope}
+        \end{tikzpicture}%
+    }
     \caption{Architecture and information flow used in Milestone 1 experiments}
 \end{figure}
 
@@ -96,7 +173,7 @@
     \item Cosine/PPI hop analyses are directionally consistent with AD-specific local structure: AD-neighbor fraction deltas are positive at $k=1,2,5$ ($0.103$, $0.098$, $0.052$) and are near zero under the null baselines.
     \item Hypothesis testing on the strongest topology and hop metrics gives empirical $p \approx 0.024$ but BH-FDR $q \approx 0.062$, so the current evidence is strong and consistent but still just above a strict $q<0.05$ cutoff.
     \item After improving synonym and composite target-name resolution, the number of AD-relevant targets with retrievable compound evidence increased from 2 to 5.
-    \item The current multiseed Prefect experiment bundle took approximately 2 hours and 12 minutes end-to-end, using development-scale settings of 10 seeds and 100 degree-matched permutations rather than a larger final-reporting run.
+    \item The current multiseed experiment bundle took approximately 2 hours and 12 minutes end-to-end, using development-scale settings of 10 seeds and 100 degree-matched permutations rather than a larger final-reporting run.
 \end{itemize}
 
 \subsection*{7. Timeline to Milestone 2}
