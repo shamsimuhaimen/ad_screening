@@ -38,7 +38,7 @@ Useful examples:
 - First local run with automatic data bootstrap: `python src/scripts/run_experiment.py --experiment-name ad_predictor --bootstrap-data --local-server`
 - Run with 4 Prefect task threads: `python src/scripts/run_experiment.py --experiment-name ad_predictor --num-threads 4 --local-server`
 - Write outputs to a custom directory: `python src/scripts/run_experiment.py --experiment-name ad_predictor --results-dir scratch_results --local-server`
-- Run the experiment script directly for one concrete configuration: `python src/scripts/ad_predictor.py --output-dir results/ad_predictor/manual_run --seed 42 --ablation embedding --hidden-dim 64 --loss-selection bce`
+- Run the experiment script directly for one concrete configuration: `python src/scripts/ad_predictor.py --output-dir results/ad_predictor/manual_run --seed 42 --no-label-shuffle --no-random-embeddings --hidden-dim 64 --loss-selection bce`
 
 CLI flags:
 - `--experiment-name`: choose the experiment, matched across `experiments/`, `src/scripts/`, and `results/`

@@ -145,6 +145,9 @@ def _build_single_run_command(
     for key, value in merged_args.items():
         if value is None:
             continue
+        if isinstance(value, bool):
+            cmd.append(_cli_flag(key) if value else f"--no-{key.replace('_', '-')}")
+            continue
         cmd.extend([_cli_flag(key), _stringify_arg(value)])
     cmd.extend(passthrough)
     return cmd
@@ -183,11 +186,7 @@ def _load_experiment_spec(
     passthrough = _passthrough_args(script_args)
     for ablation_cfg in ablations:
         ablation_name = str(ablation_cfg["name"])
-        ablation_overrides = {
-            "ablation": ablation_cfg.get("cli_ablation", defaults.get("ablation", "embedding")),
-            "hidden_dim": int(ablation_cfg.get("hidden_dim", defaults.get("hidden_dim", 64))),
-            "loss_selection": str(ablation_cfg.get("loss_selection", defaults.get("loss_selection", "bce"))),
-        }
+        ablation_overrides = {key: value for key, value in ablation_cfg.items() if key not in {"name", "description"}}
         for seed in seeds:
             run_dir = root_dir / "runs" / ablation_name / f"seed_{int(seed)}"
             run_overrides = {**ablation_overrides, "seed": int(seed)}
@@ -273,9 +272,7 @@ def run_experiment_flow(
         return {
             "ablation_name": str(run_spec["ablation_name"]),
             "seed": int(run_spec["seed"]),
-            "cli_ablation": str(run_spec["run_overrides"]["ablation"]),
-            "hidden_dim": int(run_spec["run_overrides"]["hidden_dim"]),
-            "loss_selection": str(run_spec["run_overrides"]["loss_selection"]),
+            **run_spec["run_overrides"],
             **metrics,
         }
 

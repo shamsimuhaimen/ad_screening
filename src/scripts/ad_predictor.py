@@ -58,12 +58,8 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["bce", "weighted_bce"],
         default="bce",
     )
-    p.add_argument(
-        "--ablation",
-        type=str,
-        choices=["embedding", "random_embedding", "label_shuffle"],
-        default="embedding",
-    )
+    p.add_argument("--label-shuffle", action=argparse.BooleanOptionalAction, default=False)
+    p.add_argument("--random-embeddings", action=argparse.BooleanOptionalAction, default=False)
     return p
 
 
@@ -415,6 +411,8 @@ def stratified_kfold_indices(y: np.ndarray, num_folds: int, seed: int) -> list[t
 
 def run_single(args: argparse.Namespace, output_dir: Path) -> dict[str, float | int | str]:
     output_dir.mkdir(parents=True, exist_ok=True)
+    if args.label_shuffle and args.random_embeddings:
+        raise ValueError("`--label-shuffle` and `--random-embeddings` cannot both be enabled.")
     hparams = vars(args).copy()
     hparams["output_dir"] = str(output_dir)
     hparams["script"] = "src/scripts/ad_predictor.py"
@@ -472,10 +470,10 @@ def run_single(args: argparse.Namespace, output_dir: Path) -> dict[str, float | 
     print(f"      aggregated to one embedding per gene: {len(gene_df)} genes")
 
     print("[5/7] Preparing stratified k-fold CV...")
-    print(f"      ablation mode: {args.ablation}")
+    print("      training modifiers: " f"label_shuffle={args.label_shuffle} random_embeddings={args.random_embeddings}")
 
     rng = np.random.default_rng(args.seed)
-    if args.ablation == "random_embedding":
+    if args.random_embeddings:
         x = rng.normal(loc=0.0, scale=1.0, size=x.shape).astype(np.float64)
     gene_table = gene_df[["gene_symbol", "y"]].copy()
     folds = stratified_kfold_indices(y=y, num_folds=args.num_folds, seed=args.seed)
@@ -504,7 +502,7 @@ def run_single(args: argparse.Namespace, output_dir: Path) -> dict[str, float | 
         x_test = x[test_idx]
         y_test = y[test_idx]
 
-        if args.ablation == "label_shuffle":
+        if args.label_shuffle:
             y_train = rng.permutation(y_train)
 
         mean = x_train.mean(axis=0)
@@ -573,7 +571,8 @@ def run_single(args: argparse.Namespace, output_dir: Path) -> dict[str, float | 
         raise RuntimeError("Some samples were not assigned an out-of-fold prediction.")
 
     metrics = {
-        "ablation": args.ablation,
+        "label_shuffle": bool(args.label_shuffle),
+        "random_embeddings": bool(args.random_embeddings),
         "loss_selection": args.loss_selection,
         "num_folds": int(args.num_folds),
         "mean_pos_weight": float(np.mean(pos_weights)),
@@ -664,7 +663,11 @@ def main() -> None:
     args = parse_args()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = args.output_dir or (
-        args.results_dir / f"ad_predictor_{timestamp}_{args.ablation}_{args.loss_selection}"
+        args.results_dir
+        / (
+            f"ad_predictor_{timestamp}_ls_{int(args.label_shuffle)}"
+            f"_re_{int(args.random_embeddings)}_{args.loss_selection}"
+        )
     )
     run_single(args, output_dir=output_dir)
 

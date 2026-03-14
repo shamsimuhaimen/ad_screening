@@ -18,40 +18,47 @@ defaults:
 seeds: 10
 
 ablations:
-  - name: embedding_no_hidden
-    cli_ablation: embedding
-    hidden_dim: 0
-    loss_selection: bce
-    description: Train a linear probe on the real DrugCLIP embeddings with no hidden layer.
-  # - name: embedding_hidden_4
-  #   cli_ablation: embedding
-  #   hidden_dim: 4
-  #   loss_selection: bce
-  #   description: Train on the real DrugCLIP embeddings with a 4-unit hidden layer.
-  # - name: embedding_hidden_8
-  #   cli_ablation: embedding
-  #   hidden_dim: 8
-  #   loss_selection: bce
-  #   description: Train on the real DrugCLIP embeddings with a 8-unit hidden layer.
-  # - name: embedding_hidden_16
-  #   cli_ablation: embedding
-  #   hidden_dim: 16
-  #   loss_selection: bce
-  #   description: Train on the real DrugCLIP embeddings with a 16-unit hidden layer.
-  - name: random_embedding
-    cli_ablation: random_embedding
-    hidden_dim: 0
-    loss_selection: bce
-    description: Replace embeddings with Gaussian noise as an embedding ablation.
-  - name: label_shuffle
-    cli_ablation: label_shuffle
-    hidden_dim: 0
-    loss_selection: bce
-    description: Shuffle training labels as a label-signal ablation.
-  - name: weighted_bce
-    cli_ablation: embedding
-    hidden_dim: 0
-    loss_selection: weighted_bce
-    description: >
-      Train on the real DrugCLIP embeddings with weighted binary cross-entropy,
-      using the training-fold class ratio to upweight the AD class.
+- name: ad_embedding
+  label_shuffle: false
+  random_embeddings: false
+  hidden_dim: 0
+  loss_selection: bce
+  description: Train a linear probe on the real DrugCLIP embeddings with no hidden layer.
+# - name: embedding_hidden_4
+#   label_shuffle: false
+#   random_embeddings: false
+#   hidden_dim: 4
+#   loss_selection: bce
+#   description: Train on the real DrugCLIP embeddings with a 4-unit hidden layer.
+# - name: embedding_hidden_8
+#   label_shuffle: false
+#   random_embeddings: false
+#   hidden_dim: 8
+#   loss_selection: bce
+#   description: Train on the real DrugCLIP embeddings with a 8-unit hidden layer.
+# - name: embedding_hidden_16
+#   label_shuffle: false
+#   random_embeddings: false
+#   hidden_dim: 16
+#   loss_selection: bce
+#   description: Train on the real DrugCLIP embeddings with a 16-unit hidden layer.
+- name: random_embedding
+  label_shuffle: false
+  random_embeddings: true
+  hidden_dim: 0
+  loss_selection: bce
+  description: Replace embeddings with Gaussian noise as an embedding ablation.
+- name: label_shuffle
+  label_shuffle: true
+  random_embeddings: false
+  hidden_dim: 0
+  loss_selection: bce
+  description: Shuffle training labels as a label-signal ablation.
+- name: weighted_bce
+  label_shuffle: false
+  random_embeddings: false
+  hidden_dim: 0
+  loss_selection: weighted_bce
+  description: >
+    Train on the real DrugCLIP embeddings with weighted binary cross-entropy,
+    using the training-fold class ratio to upweight the AD class.
