@@ -1,70 +1,46 @@
-#!/usr/bin/env python3
-"""Run the LOI baseline AD predictor on DrugCLIP embeddings.
-
-This script operationalizes the LOI's central claim test:
-- construct AD-vs-matched-control labels using expression-derived biology,
-- align those labels to DrugCLIP protein embeddings,
-- train a lightweight prediction head,
-- output metrics and predictions for ablation/control analysis.
-
-It is the minimal reproducible baseline for showing whether pretrained
-representations contain AD-relevant signal.
-"""
+"""Run the LOI baseline AD predictor on DrugCLIP embeddings."""
 
 from __future__ import annotations
 
-import argparse
 import json
-from datetime import datetime
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from attrs import asdict, frozen
+from sklearn.model_selection import StratifiedKFold
 
 
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--results-dir", type=Path, default=Path("results/ad_predictor"))
-    p.add_argument("--output-dir", type=Path, default=None)
-    p.add_argument("--data-dir", type=Path, default=Path("data/raw/bulk_rna_seq_human_brain"))
-    p.add_argument("--ad-genes-path", type=Path, default=Path("data/processed/ad_genes.csv"))
-    p.add_argument(
-        "--hgnc-mapping-path",
-        type=Path,
-        default=Path("data/download/hgnc_complete_set.txt"),
-    )
-    p.add_argument(
-        "--embeddings-npy",
-        type=Path,
-        default=Path("data/download/dtwg_af_embeddings.npy"),
-    )
-    p.add_argument(
-        "--names-npy",
-        type=Path,
-        default=Path("data/download/dtwg_af_names_.npy"),
-    )
-    p.add_argument("--controls-per-ad", type=int, default=2)
-    p.add_argument("--min-global-expression", type=float, default=1e-6)
-    p.add_argument("--num-folds", type=int, default=5)
-    p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--epochs", type=int, default=200)
-    p.add_argument("--lr", type=float, default=0.001)
-    p.add_argument("--l2", type=float, default=1e-4)
-    p.add_argument("--hidden-dim", type=int, default=64)
-    p.add_argument(
-        "--loss-selection",
-        type=str,
-        choices=["bce", "weighted_bce"],
-        default="bce",
-    )
-    p.add_argument("--label-shuffle", action=argparse.BooleanOptionalAction, default=False)
-    p.add_argument("--random-embeddings", action=argparse.BooleanOptionalAction, default=False)
-    return p
+PATH_ARG_KEYS = {
+    "data_dir",
+    "ad_genes_path",
+    "hgnc_mapping_path",
+    "embeddings_npy",
+    "names_npy",
+    "output_dir",
+}
 
 
-def parse_args() -> argparse.Namespace:
-    return build_parser().parse_args()
+@frozen
+class ADPredictorConfig:
+    data_dir: Path
+    ad_genes_path: Path
+    hgnc_mapping_path: Path
+    embeddings_npy: Path
+    names_npy: Path
+    output_dir: Path
+    controls_per_ad: int
+    min_global_expression: float
+    num_folds: int
+    seed: int
+    epochs: int
+    lr: float
+    l2: float
+    hidden_dim: int
+    loss_selection: str
+    label_shuffle: bool
+    random_embeddings: bool
 
 
 def zscore(s: pd.Series) -> pd.Series:
@@ -88,7 +64,7 @@ def detect_region(row: pd.Series) -> str | None:
     return None
 
 
-def load_ad_genes(args: argparse.Namespace) -> set[str]:
+def load_ad_genes(args: ADPredictorConfig) -> set[str]:
     df = pd.read_csv(args.ad_genes_path)
     if "gene_symbol" not in df.columns:
         raise ValueError("data/processed/ad_genes.csv must contain column `gene_symbol`.")
@@ -154,7 +130,7 @@ def select_matched_controls(features: pd.DataFrame, ad_symbols: set[str], contro
     return selected
 
 
-def build_label_table(args: argparse.Namespace) -> pd.DataFrame:
+def build_label_table(args: ADPredictorConfig) -> pd.DataFrame:
     data_dir = args.data_dir
     genes = pd.read_csv(data_dir / "Genes.csv", usecols=["gene_symbol", "gene_id"])
     sample_annot = pd.read_csv(data_dir / "SampleAnnot.csv")
@@ -203,30 +179,24 @@ def build_label_table(args: argparse.Namespace) -> pd.DataFrame:
     )
 
 
-def sigmoid(x: np.ndarray) -> np.ndarray:
-    return 1.0 / (1.0 + np.exp(-np.clip(x, -40, 40)))
+def ffn_forward(x: np.ndarray, model: object) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Run inference through the trained PyTorch FFN and return hidden activations plus probabilities."""
+    try:
+        import torch
+    except ImportError as exc:
+        raise ImportError("ffn_forward now requires PyTorch to be installed.") from exc
 
-
-def relu(x: np.ndarray) -> np.ndarray:
-    return np.maximum(x, 0.0)
-
-
-def ffn_forward(
-    x: np.ndarray,
-    w1: np.ndarray,
-    b1: np.ndarray,
-    w2: np.ndarray,
-    b2: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    if w2.size == 0:
-        logits = (x @ w1).reshape(-1) + b2
-        probs = sigmoid(logits)
-        return logits[:, None], x, probs
-    h_pre = x @ w1 + b1
-    h = relu(h_pre)
-    logits = (h @ w2).reshape(-1) + b2
-    probs = sigmoid(logits)
-    return h_pre, h, probs
+    x_tensor = torch.tensor(x, dtype=torch.float64)
+    with torch.no_grad():
+        if model.hidden is None:
+            logits = model.output(x_tensor).reshape(-1)
+            probs = torch.sigmoid(logits)
+            return logits[:, None].cpu().numpy(), x_tensor.cpu().numpy(), probs.cpu().numpy()
+        h_pre = model.hidden(x_tensor)
+        h = torch.relu(h_pre)
+        logits = model.output(h).reshape(-1)
+        probs = torch.sigmoid(logits)
+        return h_pre.cpu().numpy(), h.cpu().numpy(), probs.cpu().numpy()
 
 
 def resolve_class_weights(y: np.ndarray, loss_selection: str) -> tuple[float, float]:
@@ -242,24 +212,6 @@ def resolve_class_weights(y: np.ndarray, loss_selection: str) -> tuple[float, fl
     return float(n_neg / n_pos), 1.0
 
 
-def bce_loss_ffn(
-    x: np.ndarray,
-    y: np.ndarray,
-    w1: np.ndarray,
-    b1: np.ndarray,
-    w2: np.ndarray,
-    b2: float,
-    l2: float,
-    pos_weight: float = 1.0,
-    neg_weight: float = 1.0,
-) -> float:
-    _, _, probs = ffn_forward(x, w1, b1, w2, b2)
-    eps = 1e-12
-    ce = -(pos_weight * y * np.log(probs + eps) + neg_weight * (1.0 - y) * np.log(1.0 - probs + eps)).mean()
-    reg = 0.5 * l2 * float(np.sum(w1 * w1) + np.sum(w2 * w2))
-    return float(ce + reg)
-
-
 def train_small_ffn(
     x_train: np.ndarray,
     y_train: np.ndarray,
@@ -271,61 +223,77 @@ def train_small_ffn(
     l2: float,
     loss_selection: str,
     seed: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, list[dict[str, float]]]:
+) -> tuple[object, list[dict[str, float]]]:
+    try:
+        import torch
+        import torch.nn.functional as F
+    except ImportError as exc:
+        raise ImportError("train_small_ffn now requires PyTorch to be installed.") from exc
+
     n, d = x_train.shape
-    rng = np.random.default_rng(seed)
     if hidden_dim < 0:
         raise ValueError("hidden_dim must be >= 0")
-    if hidden_dim == 0:
-        w1 = rng.normal(0.0, 1.0 / np.sqrt(d), size=(d, 1)).astype(np.float64)
-        b1 = np.zeros(1, dtype=np.float64)
-        w2 = np.zeros((0, 1), dtype=np.float64)
-    else:
-        w1 = rng.normal(0.0, 1.0 / np.sqrt(d), size=(d, hidden_dim)).astype(np.float64)
-        b1 = np.zeros(hidden_dim, dtype=np.float64)
-        w2 = rng.normal(0.0, 1.0 / np.sqrt(hidden_dim), size=(hidden_dim, 1)).astype(np.float64)
-    b2 = 0.0
+    torch.manual_seed(seed)
+
+    x_train_t = torch.tensor(x_train, dtype=torch.float64)
+    y_train_t = torch.tensor(y_train, dtype=torch.float64)
+    x_test_t = torch.tensor(x_test, dtype=torch.float64)
+    y_test_t = torch.tensor(y_test, dtype=torch.float64)
+
+    class SmallFFN(torch.nn.Module):
+        def __init__(self, input_dim: int, hidden_size: int) -> None:
+            super().__init__()
+            self.hidden = None if hidden_size == 0 else torch.nn.Linear(input_dim, hidden_size, dtype=torch.float64)
+            out_in = input_dim if hidden_size == 0 else hidden_size
+            self.output = torch.nn.Linear(out_in, 1, dtype=torch.float64)
+
+            if self.hidden is None:
+                torch.nn.init.normal_(self.output.weight, mean=0.0, std=1.0 / np.sqrt(input_dim))
+            else:
+                torch.nn.init.normal_(self.hidden.weight, mean=0.0, std=1.0 / np.sqrt(input_dim))
+                torch.nn.init.zeros_(self.hidden.bias)
+                torch.nn.init.normal_(self.output.weight, mean=0.0, std=1.0 / np.sqrt(hidden_size))
+            torch.nn.init.zeros_(self.output.bias)
+
+        def forward(self, x_tensor: torch.Tensor) -> torch.Tensor:
+            if self.hidden is None:
+                return self.output(x_tensor).reshape(-1)
+            return self.output(torch.relu(self.hidden(x_tensor))).reshape(-1)
+
+    model = SmallFFN(d, hidden_dim)
+
     history: list[dict[str, float]] = []
     pos_weight, neg_weight = resolve_class_weights(y_train, loss_selection)
+    optimizer = torch.optim.SGD(model.parameters(), lr=lr, weight_decay=l2)
+
+    def weighted_loss(x_tensor: torch.Tensor, y_tensor: torch.Tensor) -> torch.Tensor:
+        logits = model(x_tensor)
+        base = F.binary_cross_entropy_with_logits(logits, y_tensor, reduction="none")
+        weights = torch.where(
+            y_tensor == 1.0,
+            torch.tensor(pos_weight, dtype=torch.float64),
+            torch.tensor(neg_weight, dtype=torch.float64),
+        )
+        return (base * weights).mean()
 
     for epoch in range(1, epochs + 1):
-        h_pre, h, probs = ffn_forward(x_train, w1, b1, w2, b2)
-        sample_weights = np.where(y_train == 1.0, pos_weight, neg_weight)
-        err = (probs - y_train) * sample_weights
+        optimizer.zero_grad()
+        train_loss = weighted_loss(x_train_t, y_train_t)
+        train_loss.backward()
+        optimizer.step()
 
-        if hidden_dim == 0:
-            # Linear probe path: x -> sigmoid.
-            grad_w1 = (x_train.T @ err.reshape(-1, 1)) / n + l2 * w1
-            grad_b1 = np.zeros_like(b1)
-            grad_w2 = np.zeros_like(w2)
-            grad_b2 = float(err.mean())
-        else:
-            # Backpropagation through 1-hidden-layer FFN.
-            grad_w2 = (h.T @ err.reshape(-1, 1)) / n + l2 * w2
-            grad_b2 = float(err.mean())
-            grad_h = err.reshape(-1, 1) @ w2.T
-            grad_h_pre = grad_h * (h_pre > 0.0)
-            grad_w1 = (x_train.T @ grad_h_pre) / n + l2 * w1
-            grad_b1 = grad_h_pre.mean(axis=0)
-
-        w2 -= lr * grad_w2
-        b2 -= lr * grad_b2
-        w1 -= lr * grad_w1
-        b1 -= lr * grad_b1
+        with torch.no_grad():
+            test_loss = weighted_loss(x_test_t, y_test_t)
 
         history.append(
             {
                 "epoch": float(epoch),
-                "train_loss": bce_loss_ffn(
-                    x_train, y_train, w1, b1, w2, b2, l2, pos_weight=pos_weight, neg_weight=neg_weight
-                ),
-                "test_loss": bce_loss_ffn(
-                    x_test, y_test, w1, b1, w2, b2, l2, pos_weight=pos_weight, neg_weight=neg_weight
-                ),
+                "train_loss": float(train_loss.detach().cpu().item()),
+                "test_loss": float(test_loss.detach().cpu().item()),
             }
         )
 
-    return w1, b1, w2, b2, history
+    return model, history
 
 
 def roc_auc(y_true: np.ndarray, y_score: np.ndarray) -> float:
@@ -389,33 +357,23 @@ def stratified_kfold_indices(y: np.ndarray, num_folds: int, seed: int) -> list[t
         raise ValueError("num_folds must be >= 2")
 
     y_int = y.astype(int)
-    idx_all = np.arange(len(y_int))
-    pos = idx_all[y_int == 1].copy()
-    neg = idx_all[y_int == 0].copy()
-    if len(pos) < num_folds or len(neg) < num_folds:
-        raise ValueError(f"Not enough samples per class for {num_folds}-fold CV: pos={len(pos)} neg={len(neg)}.")
+    pos_count = int((y_int == 1).sum())
+    neg_count = int((y_int == 0).sum())
+    if pos_count < num_folds or neg_count < num_folds:
+        raise ValueError(f"Not enough samples per class for {num_folds}-fold CV: pos={pos_count} neg={neg_count}.")
 
-    rng = np.random.default_rng(seed)
-    rng.shuffle(pos)
-    rng.shuffle(neg)
-    pos_folds = np.array_split(pos, num_folds)
-    neg_folds = np.array_split(neg, num_folds)
-
-    folds: list[tuple[np.ndarray, np.ndarray]] = []
-    for fold_idx in range(num_folds):
-        test_idx = np.concatenate([pos_folds[fold_idx], neg_folds[fold_idx]])
-        train_idx = np.setdiff1d(idx_all, test_idx)
-        folds.append((train_idx, test_idx))
-    return folds
+    splitter = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=seed)
+    x_dummy = np.zeros((len(y_int), 1), dtype=np.float64)
+    return [(train_idx, test_idx) for train_idx, test_idx in splitter.split(x_dummy, y_int)]
 
 
-def run_single(args: argparse.Namespace, output_dir: Path) -> dict[str, float | int | str]:
+def run_single(args: ADPredictorConfig, output_dir: Path) -> dict[str, float | int | str]:
     output_dir.mkdir(parents=True, exist_ok=True)
     if args.label_shuffle and args.random_embeddings:
-        raise ValueError("`--label-shuffle` and `--random-embeddings` cannot both be enabled.")
-    hparams = vars(args).copy()
+        raise ValueError("`label_shuffle` and `random_embeddings` cannot both be enabled.")
+    hparams = asdict(args)
     hparams["output_dir"] = str(output_dir)
-    hparams["script"] = "src/scripts/ad_predictor.py"
+    hparams["implementation"] = "package.ad_predictor.run_ad_predictor"
     with open(output_dir / "hyperparameters.json", "w") as f:
         json.dump(hparams, f, indent=2, default=str)
 
@@ -432,14 +390,10 @@ def run_single(args: argparse.Namespace, output_dir: Path) -> dict[str, float | 
     print(f"      embeddings shape: {embeddings.shape}")
 
     print("[3/7] Extracting UniProt accessions from embedding names...")
-    # Embedding names are AF paths like ".../AF-Q8NH85-F1-model_v4...".
     acc = pd.Series(names).astype(str).str.extract(r"AF-([A-Z0-9]+)-F1", expand=False).str.upper()
-    names_df = pd.DataFrame(
-        {
-            "uniprot_accession": acc,
-            "row_idx": np.arange(len(names)),
-        }
-    ).dropna(subset=["uniprot_accession"])
+    names_df = pd.DataFrame({"uniprot_accession": acc, "row_idx": np.arange(len(names))}).dropna(
+        subset=["uniprot_accession"]
+    )
     print(f"      extracted accessions: {len(names_df)} rows")
 
     print("[4/7] Mapping gene symbols to UniProt...")
@@ -454,15 +408,9 @@ def run_single(args: argparse.Namespace, output_dir: Path) -> dict[str, float | 
         raise ValueError("No overlapping genes between labels and embedding names.")
     print(f"      overlap after mapping/join: {len(merged)} rows ({merged['gene_symbol'].nunique()} unique genes)")
 
-    # Aggregate multiple embedding rows to one vector per gene.
     row_lists = merged.groupby("gene_symbol")["row_idx"].apply(list)
     gene_df = merged.groupby("gene_symbol", as_index=False).agg(
-        {
-            "label": "first",
-            "y": "first",
-            "integrated_score": "mean",
-            "uniprot_accession": "first",
-        }
+        {"label": "first", "y": "first", "integrated_score": "mean", "uniprot_accession": "first"}
     )
     gene_df["row_indices"] = gene_df["gene_symbol"].map(row_lists)
     x = np.vstack([embeddings[np.asarray(indices, dtype=int)].mean(axis=0) for indices in gene_df["row_indices"]])
@@ -517,7 +465,7 @@ def run_single(args: argparse.Namespace, output_dir: Path) -> dict[str, float | 
             f"train={len(train_idx)} test={len(test_idx)} "
             f"pos_weight={pos_weight:.4f} neg_weight={neg_weight:.4f}"
         )
-        w1, b1, w2, b2, loss_history = train_small_ffn(
+        model, loss_history = train_small_ffn(
             x_train=x_train,
             y_train=y_train,
             x_test=x_test,
@@ -530,8 +478,8 @@ def run_single(args: argparse.Namespace, output_dir: Path) -> dict[str, float | 
             seed=args.seed * 10_000 + fold_idx,
         )
 
-        _, _, train_probs = ffn_forward(x_train, w1, b1, w2, b2)
-        _, _, test_probs = ffn_forward(x_test, w1, b1, w2, b2)
+        _, _, train_probs = ffn_forward(x_train, model)
+        _, _, test_probs = ffn_forward(x_test, model)
         test_pred = (test_probs >= 0.5).astype(int)
         train_acc = float((((train_probs >= 0.5).astype(int)) == y_train).mean())
         test_acc = float((test_pred == y_test).mean())
@@ -593,8 +541,7 @@ def run_single(args: argparse.Namespace, output_dir: Path) -> dict[str, float | 
     with open(output_dir / "metrics.json", "w") as f:
         json.dump(metrics, f, indent=2)
 
-    fold_metrics_df = pd.DataFrame(fold_rows)
-    fold_metrics_df.to_csv(output_dir / "fold_metrics.csv", index=False)
+    pd.DataFrame(fold_rows).to_csv(output_dir / "fold_metrics.csv", index=False)
 
     pred_df = gene_df[["gene_symbol", "uniprot_accession", "label", "integrated_score"]].copy()
     pred_df["fold"] = oof_fold.astype(int)
@@ -604,8 +551,7 @@ def run_single(args: argparse.Namespace, output_dir: Path) -> dict[str, float | 
     pred_df.to_csv(output_dir / "test_predictions.csv", index=False)
 
     roc_fpr, roc_tpr = roc_curve_points(y, oof_probs)
-    roc_df = pd.DataFrame({"fpr": roc_fpr, "tpr": roc_tpr})
-    roc_df.to_csv(output_dir / "roc_curve.csv", index=False)
+    pd.DataFrame({"fpr": roc_fpr, "tpr": roc_tpr}).to_csv(output_dir / "roc_curve.csv", index=False)
     plt.figure(figsize=(6, 6))
     plt.plot(roc_fpr, roc_tpr, color="#F58518", label=f"AUROC = {metrics['test_auroc']:.3f}")
     plt.plot([0.0, 1.0], [0.0, 1.0], linestyle="--", color="#9A9A9A", linewidth=1)
@@ -618,8 +564,7 @@ def run_single(args: argparse.Namespace, output_dir: Path) -> dict[str, float | 
     plt.close()
 
     pr_recall, pr_precision = pr_curve_points(y, oof_probs)
-    pr_df = pd.DataFrame({"recall": pr_recall, "precision": pr_precision})
-    pr_df.to_csv(output_dir / "pr_curve.csv", index=False)
+    pd.DataFrame({"recall": pr_recall, "precision": pr_precision}).to_csv(output_dir / "pr_curve.csv", index=False)
     plt.figure(figsize=(6, 6))
     plt.plot(pr_recall, pr_precision, color="#54A24B", label=f"AUPRC = {metrics['test_auprc']:.3f}")
     plt.xlabel("Recall")
@@ -659,18 +604,31 @@ def run_single(args: argparse.Namespace, output_dir: Path) -> dict[str, float | 
     return metrics
 
 
-def main() -> None:
-    args = parse_args()
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = args.output_dir or (
-        args.results_dir
-        / (
-            f"ad_predictor_{timestamp}_ls_{int(args.label_shuffle)}"
-            f"_re_{int(args.random_embeddings)}_{args.loss_selection}"
-        )
-    )
-    run_single(args, output_dir=output_dir)
+def _config_from_payload(payload: dict[str, object]) -> ADPredictorConfig:
+    """Coerce forwarded experiment-config values into the frozen config used by the implementation."""
+    converted = dict(payload)
+    for key in PATH_ARG_KEYS:
+        value = converted.get(key)
+        if value is not None and not isinstance(value, Path):
+            converted[key] = Path(value)
+    return ADPredictorConfig(**converted)
 
 
-if __name__ == "__main__":
-    main()
+def run_ad_predictor(
+    experiment_config: dict[str, object],
+    ablation_name: str,
+    seed: int,
+    output_dir: Path,
+) -> dict[str, float | int | str]:
+    """Run one concrete AD predictor job selected from an experiment YAML payload."""
+    ablations = experiment_config.get("ablations", [])
+    ablation_cfg = next((cfg for cfg in ablations if str(cfg.get("name")) == ablation_name), None)
+    if ablation_cfg is None:
+        raise ValueError(f"Ablation `{ablation_name}` not found in experiment config.")
+
+    payload = dict(experiment_config.get("defaults", {}))
+    payload.update({key: value for key, value in ablation_cfg.items() if key not in {"name", "description"}})
+    payload["seed"] = seed
+    payload["output_dir"] = output_dir
+    args = _config_from_payload(payload)
+    return run_single(args, output_dir=output_dir)

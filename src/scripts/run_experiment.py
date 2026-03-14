@@ -10,13 +10,18 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import csv
-import json
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
 
 import yaml
+
+SRC_ROOT = Path(__file__).resolve().parents[1]
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from package.ad_predictor import run_ad_predictor
 
 
 DEFAULT_EXPERIMENT_NAME = "ad_predictor"
@@ -37,19 +42,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--results-dir", type=Path, default=Path("results"))
     p.add_argument("--bootstrap-data", action="store_true")
     p.add_argument("--num-threads", type=_positive_int, default=6)
-    p.add_argument(
-        "script_args",
-        nargs=argparse.REMAINDER,
-        help="Additional arguments passed through to the experiment script after `--`.",
-    )
     return p.parse_args()
 
 
-def resolve_experiment_paths(experiment_name: str) -> tuple[Path, Path, Path]:
+def resolve_experiment_paths(experiment_name: str) -> tuple[Path, Path]:
     config_path = Path("experiments") / f"{experiment_name}.yaml"
-    script_path = Path("src/scripts") / f"{experiment_name}.py"
     results_path = Path("results") / experiment_name
-    return config_path, script_path, results_path
+    return config_path, results_path
 
 
 def _required_download_inputs() -> list[Path]:
@@ -83,65 +82,25 @@ def ensure_bootstrap_data(bootstrap_data: bool) -> None:
         raise RuntimeError("Bootstrap download failed.")
 
 
-def _passthrough_args(script_args: list[str]) -> list[str]:
-    passthrough = script_args
-    if passthrough and passthrough[0] == "--":
-        passthrough = passthrough[1:]
-    return passthrough
-
-
-def _cli_flag(name: str) -> str:
-    return f"--{name.replace('_', '-')}"
-
-
-def _stringify_arg(value: object) -> str:
-    if isinstance(value, Path):
-        return str(value)
-    return str(value)
-
-
 def _resolve_seeds(num_seeds: int, default_seed: int) -> list[int]:
     return list(range(default_seed, default_seed + num_seeds))
-
-
-def _build_single_run_command(
-    script_path: Path,
-    output_dir: Path,
-    base_args: dict[str, object],
-    run_overrides: dict[str, object],
-    passthrough: list[str],
-) -> list[str]:
-    cmd = [sys.executable, str(script_path), "--output-dir", str(output_dir)]
-    merged_args = dict(base_args)
-    merged_args.update(run_overrides)
-    for key, value in merged_args.items():
-        if value is None:
-            continue
-        if isinstance(value, bool):
-            cmd.append(_cli_flag(key) if value else f"--no-{key.replace('_', '-')}")
-            continue
-        cmd.extend([_cli_flag(key), _stringify_arg(value)])
-    cmd.extend(passthrough)
-    return cmd
 
 
 def _load_experiment_spec(
     experiment_name: str,
     results_dir: Path,
-    script_args: list[str],
-) -> tuple[Path, Path, list[dict[str, object]]]:
-    config_path, script_path, _ = resolve_experiment_paths(experiment_name)
+) -> tuple[Path, Path, dict[str, object], list[dict[str, object]]]:
+    """Expand an experiment YAML into concrete run specs and a timestamped output root."""
+    config_path, _ = resolve_experiment_paths(experiment_name)
     root_results_dir = results_dir / experiment_name if results_dir == Path("results") else results_dir
 
     if not config_path.exists():
         raise FileNotFoundError(f"Experiment config not found: {config_path}")
-    if not script_path.exists():
-        raise FileNotFoundError(f"Experiment script not found: {script_path}")
 
     cfg = yaml.safe_load(config_path.read_text())
-    expected_script = Path(str(cfg.get("script", "")))
-    if expected_script != script_path:
-        raise ValueError(f"Config script mismatch: expected `{script_path}`, found `{expected_script}`.")
+    implementation = str(cfg.get("implementation", ""))
+    if implementation != "ad_predictor":
+        raise ValueError(f"Unsupported implementation `{implementation}` in {config_path}.")
 
     defaults = dict(cfg.get("defaults", {}))
     if not defaults:
@@ -155,26 +114,23 @@ def _load_experiment_spec(
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     root_dir = root_results_dir / f"experiment_runs_{timestamp}"
     runs: list[dict[str, object]] = []
-    passthrough = _passthrough_args(script_args)
     for ablation_cfg in ablations:
         ablation_name = str(ablation_cfg["name"])
         ablation_overrides = {key: value for key, value in ablation_cfg.items() if key not in {"name", "description"}}
         for seed in seeds:
             run_dir = root_dir / "runs" / ablation_name / f"seed_{int(seed)}"
             run_overrides = {**ablation_overrides, "seed": int(seed)}
-            cmd = _build_single_run_command(script_path, run_dir, defaults, run_overrides, passthrough)
             runs.append(
                 {
                     "experiment_name": experiment_name,
                     "ablation_name": ablation_name,
                     "seed": int(seed),
-                    "cmd": cmd,
                     "output_dir": run_dir,
                     "run_overrides": run_overrides,
                 }
             )
 
-    return root_dir, config_path, runs
+    return root_dir, config_path, cfg, runs
 
 
 def _write_summary_csv(rows: list[dict[str, object]], path: Path) -> None:
@@ -215,14 +171,16 @@ def _write_summary_by_ablation(rows: list[dict[str, object]], path: Path) -> Non
     _write_summary_csv(summary_rows, path)
 
 
-def _run_subprocess(run_spec: dict[str, object]) -> dict[str, object]:
-    command = list(run_spec["cmd"])
+def _run_implementation(run_spec: dict[str, object], experiment_config: dict[str, object]) -> dict[str, object]:
+    """Execute one expanded run spec against the package implementation and return summary fields."""
     output_dir = Path(str(run_spec["output_dir"]))
     output_dir.mkdir(parents=True, exist_ok=True)
-    proc = subprocess.run(command, check=False)
-    if proc.returncode != 0:
-        raise RuntimeError(f"Experiment subprocess failed with exit code {proc.returncode}.")
-    metrics = json.loads((output_dir / "metrics.json").read_text())
+    metrics = run_ad_predictor(
+        experiment_config=experiment_config,
+        ablation_name=str(run_spec["ablation_name"]),
+        seed=int(run_spec["seed"]),
+        output_dir=output_dir,
+    )
     return {
         "ablation_name": str(run_spec["ablation_name"]),
         "seed": int(run_spec["seed"]),
@@ -234,13 +192,16 @@ def _run_subprocess(run_spec: dict[str, object]) -> dict[str, object]:
 def run_experiment(
     root_dir: Path,
     config_path: Path,
+    experiment_config: dict[str, object],
     runs: list[dict[str, object]],
     num_threads: int | None,
 ) -> None:
+    """Run all expanded jobs for an experiment and write aggregated summary artifacts."""
     root_dir.mkdir(parents=True, exist_ok=True)
     (root_dir / "config.snapshot.yaml").write_text(config_path.read_text())
     with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
-        rows = list(executor.map(_run_subprocess, runs))
+        futures = [executor.submit(_run_implementation, run_spec, experiment_config) for run_spec in runs]
+        rows = [future.result() for future in futures]
     _write_summary_csv(rows, root_dir / "summary.csv")
     _write_summary_by_ablation(rows, root_dir / "summary_by_ablation.csv")
     print(f"Wrote: {root_dir / 'summary.csv'}")
@@ -250,8 +211,8 @@ def run_experiment(
 def main() -> None:
     args = parse_args()
     ensure_bootstrap_data(bootstrap_data=args.bootstrap_data)
-    root_dir, config_path, runs = _load_experiment_spec(args.experiment_name, args.results_dir, args.script_args)
-    run_experiment(root_dir, config_path, runs, args.num_threads)
+    root_dir, config_path, experiment_config, runs = _load_experiment_spec(args.experiment_name, args.results_dir)
+    run_experiment(root_dir, config_path, experiment_config, runs, args.num_threads)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-script: src/scripts/ad_predictor.py
+implementation: ad_predictor
 
 defaults:
   data_dir: data/raw/bulk_rna_seq_human_brain
@@ -15,7 +15,7 @@ defaults:
   hidden_dim: 0
   loss_selection: bce
 
-seeds: 10
+seeds: 2
 
 ablations:
 - name: ad_embedding

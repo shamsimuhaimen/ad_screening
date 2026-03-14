@@ -8,7 +8,9 @@ dependencies:
   - pre-commit
   - pandas
   - numpy
+  - pytorch
   - openpyxl
   - matplotlib
   - seaborn
   - pyyaml
+  - scikit-learn
