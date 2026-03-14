@@ -17,7 +17,7 @@ defaults:
   label_shuffle: false
   random_embeddings: false
 
-seeds: 10
+seeds: 2
 
 ablations:
 - name: ad_embedding

@@ -130,7 +130,7 @@ def select_matched_controls(features: pd.DataFrame, ad_symbols: set[str], contro
     return selected
 
 
-def build_label_table(args: ADPredictorConfig) -> pd.DataFrame:
+def build_candidate_gene_table(args: ADPredictorConfig) -> pd.DataFrame:
     data_dir = args.data_dir
     genes = pd.read_csv(data_dir / "Genes.csv", usecols=["gene_symbol", "gene_id"])
     sample_annot = pd.read_csv(data_dir / "SampleAnnot.csv")
@@ -160,23 +160,33 @@ def build_label_table(args: ADPredictorConfig) -> pd.DataFrame:
     if not ad_present:
         raise ValueError("None of the AD genes were found in the expression data.")
 
-    control_symbols = select_matched_controls(merged, ad_present, args.controls_per_ad)
-    selected = merged[merged["gene_symbol"].isin(ad_present) | merged["gene_symbol"].isin(control_symbols)].copy()
-    selected["label"] = np.where(selected["gene_symbol"].isin(ad_present), "AD", "control")
-    selected["y"] = np.where(selected["label"] == "AD", 1.0, 0.0)
+    merged["label"] = np.where(merged["gene_symbol"].isin(ad_present), "AD", "control")
+    merged["y"] = np.where(merged["label"] == "AD", 1.0, 0.0)
 
     integrated_parts = []
     for expr_col in expr_cols:
         other_cols = [c for c in expr_cols if c != expr_col]
-        region_values = selected[expr_col]
-        specificity = selected[expr_col] - selected[other_cols].mean(axis=1)
+        region_values = merged[expr_col]
+        specificity = merged[expr_col] - merged[other_cols].mean(axis=1)
         integrated = 0.7 * zscore(region_values) + 0.3 * zscore(specificity)
         integrated_parts.append(integrated)
-    selected["integrated_score"] = np.mean(np.vstack(integrated_parts), axis=0)
+    merged["integrated_score"] = np.mean(np.vstack(integrated_parts), axis=0)
 
-    return selected[["gene_id", "gene_symbol", "label", "y", "integrated_score"]].drop_duplicates(
+    return merged[["gene_id", "gene_symbol", "label", "y", "integrated_score", "global_mean"]].drop_duplicates(
         subset=["gene_symbol"]
     )
+
+
+def select_fold_examples(features: pd.DataFrame, controls_per_ad: int) -> pd.DataFrame:
+    ad_symbols = set(features.loc[features["y"] == 1.0, "gene_symbol"])
+    if not ad_symbols:
+        raise ValueError("Fold split does not contain any AD genes.")
+    control_symbols = select_matched_controls(features, ad_symbols, controls_per_ad)
+    selected_symbols = ad_symbols.union(control_symbols)
+    selected = features[features["gene_symbol"].isin(selected_symbols)].copy()
+    if selected["y"].nunique() < 2:
+        raise ValueError("Fold split does not contain both classes after matched control selection.")
+    return selected
 
 
 def ffn_forward(x: np.ndarray, model: object) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -367,24 +377,24 @@ def stratified_kfold_indices(y: np.ndarray, num_folds: int, seed: int) -> list[t
     return [(train_idx, test_idx) for train_idx, test_idx in splitter.split(x_dummy, y_int)]
 
 
-def run_single(args: ADPredictorConfig, output_dir: Path) -> dict[str, float | int | str]:
+def run_single(config: ADPredictorConfig, output_dir: Path) -> dict[str, float | int | str]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    if args.label_shuffle and args.random_embeddings:
+    if config.label_shuffle and config.random_embeddings:
         raise ValueError("`label_shuffle` and `random_embeddings` cannot both be enabled.")
-    hparams = asdict(args)
-    hparams["output_dir"] = str(output_dir)
-    hparams["implementation"] = "package.ad_predictor.run_ad_predictor"
-    with open(output_dir / "hyperparameters.json", "w") as f:
-        json.dump(hparams, f, indent=2, default=str)
+    config_dict = asdict(config)
+    config_dict["output_dir"] = str(output_dir)
+    config_dict["implementation"] = "package.ad_predictor.run_ad_predictor"
+    with open(output_dir / "config.json", "w") as f:
+        json.dump(config_dict, f, indent=2, default=str)
 
-    print("[1/7] Building AD/control label table from expression data...")
-    labels = build_label_table(args)
+    print("[1/7] Building candidate gene table from expression data...")
+    labels = build_candidate_gene_table(config)
     labels.to_csv(output_dir / "labels_used.csv", index=False)
-    print(f"      labels built: {len(labels)} genes")
+    print(f"      candidate genes built: {len(labels)} genes")
 
     print("[2/7] Loading embeddings and names...")
-    names = np.load(args.names_npy, allow_pickle=True)
-    embeddings = np.load(args.embeddings_npy)
+    names = np.load(config.names_npy, allow_pickle=True)
+    embeddings = np.load(config.embeddings_npy)
     if len(names) != embeddings.shape[0]:
         raise ValueError("names and embeddings row counts do not match.")
     print(f"      embeddings shape: {embeddings.shape}")
@@ -397,7 +407,7 @@ def run_single(args: ADPredictorConfig, output_dir: Path) -> dict[str, float | i
     print(f"      extracted accessions: {len(names_df)} rows")
 
     print("[4/7] Mapping gene symbols to UniProt...")
-    mapping_df = build_gene_to_uniprot_map(labels["gene_symbol"].tolist(), args.hgnc_mapping_path)
+    mapping_df = build_gene_to_uniprot_map(labels["gene_symbol"].tolist(), config.hgnc_mapping_path)
     mapping_df.to_csv(output_dir / "gene_to_uniprot_mapping.csv", index=False)
     n_mapped = int(mapping_df["uniprot_accession"].notna().sum())
     print(f"Mapped gene symbols to UniProt: {n_mapped}/{len(mapping_df)}")
@@ -410,7 +420,13 @@ def run_single(args: ADPredictorConfig, output_dir: Path) -> dict[str, float | i
 
     row_lists = merged.groupby("gene_symbol")["row_idx"].apply(list)
     gene_df = merged.groupby("gene_symbol", as_index=False).agg(
-        {"label": "first", "y": "first", "integrated_score": "mean", "uniprot_accession": "first"}
+        {
+            "label": "first",
+            "y": "first",
+            "integrated_score": "mean",
+            "global_mean": "mean",
+            "uniprot_accession": "first",
+        }
     )
     gene_df["row_indices"] = gene_df["gene_symbol"].map(row_lists)
     x = np.vstack([embeddings[np.asarray(indices, dtype=int)].mean(axis=0) for indices in gene_df["row_indices"]])
@@ -418,24 +434,24 @@ def run_single(args: ADPredictorConfig, output_dir: Path) -> dict[str, float | i
     print(f"      aggregated to one embedding per gene: {len(gene_df)} genes")
 
     print("[5/7] Preparing stratified k-fold CV...")
-    print("      training modifiers: " f"label_shuffle={args.label_shuffle} random_embeddings={args.random_embeddings}")
+    print(
+        "      training modifiers: "
+        f"label_shuffle={config.label_shuffle} random_embeddings={config.random_embeddings}"
+    )
 
-    rng = np.random.default_rng(args.seed)
-    if args.random_embeddings:
+    rng = np.random.default_rng(config.seed)
+    if config.random_embeddings:
         x = rng.normal(loc=0.0, scale=1.0, size=x.shape).astype(np.float64)
     gene_table = gene_df[["gene_symbol", "y"]].copy()
-    folds = stratified_kfold_indices(y=y, num_folds=args.num_folds, seed=args.seed)
-    print(f"      unique genes: total={gene_table.shape[0]} folds={args.num_folds}")
+    folds = stratified_kfold_indices(y=y, num_folds=config.num_folds, seed=config.seed)
+    print(f"      unique genes: total={gene_table.shape[0]} folds={config.num_folds}")
     print(f"      class counts (genes): pos={int((y==1).sum())} neg={int((y==0).sum())}")
     print("[6/7] Training small FFN prediction head across folds...")
-    if args.hidden_dim == 0:
+    if config.hidden_dim == 0:
         print("      architecture: 768 -> 1 (linear probe)")
     else:
-        print(f"      architecture: 768 -> {args.hidden_dim} -> 1")
+        print(f"      architecture: 768 -> {config.hidden_dim} -> 1")
 
-    oof_probs = np.zeros(len(y), dtype=np.float64)
-    oof_pred = np.zeros(len(y), dtype=int)
-    oof_fold = np.full(len(y), -1, dtype=int)
     fold_rows: list[dict[str, float | int | str]] = []
     all_loss_history: list[pd.DataFrame] = []
     train_acc_values: list[float] = []
@@ -443,14 +459,18 @@ def run_single(args: ADPredictorConfig, output_dir: Path) -> dict[str, float | i
     test_sizes: list[int] = []
     pos_weights: list[float] = []
     neg_weights: list[float] = []
+    test_prediction_rows: list[pd.DataFrame] = []
 
     for fold_idx, (train_idx, test_idx) in enumerate(folds):
-        x_train = x[train_idx]
-        y_train = y[train_idx]
-        x_test = x[test_idx]
-        y_test = y[test_idx]
+        train_genes = select_fold_examples(gene_df.iloc[train_idx].copy(), config.controls_per_ad)
+        test_genes = select_fold_examples(gene_df.iloc[test_idx].copy(), config.controls_per_ad)
 
-        if args.label_shuffle:
+        x_train = np.vstack([x[int(idx)] for idx in train_genes.index])
+        y_train = train_genes["y"].to_numpy(dtype=np.float64)
+        x_test = np.vstack([x[int(idx)] for idx in test_genes.index])
+        y_test = test_genes["y"].to_numpy(dtype=np.float64)
+
+        if config.label_shuffle:
             y_train = rng.permutation(y_train)
 
         mean = x_train.mean(axis=0)
@@ -459,9 +479,9 @@ def run_single(args: ADPredictorConfig, output_dir: Path) -> dict[str, float | i
         x_train = (x_train - mean) / std
         x_test = (x_test - mean) / std
 
-        pos_weight, neg_weight = resolve_class_weights(y_train, args.loss_selection)
+        pos_weight, neg_weight = resolve_class_weights(y_train, config.loss_selection)
         print(
-            f"      fold {fold_idx + 1}/{args.num_folds}: "
+            f"      fold {fold_idx + 1}/{config.num_folds}: "
             f"train={len(train_idx)} test={len(test_idx)} "
             f"pos_weight={pos_weight:.4f} neg_weight={neg_weight:.4f}"
         )
@@ -470,12 +490,12 @@ def run_single(args: ADPredictorConfig, output_dir: Path) -> dict[str, float | i
             y_train=y_train,
             x_test=x_test,
             y_test=y_test,
-            hidden_dim=args.hidden_dim,
-            epochs=args.epochs,
-            lr=args.lr,
-            l2=args.l2,
-            loss_selection=args.loss_selection,
-            seed=args.seed * 10_000 + fold_idx,
+            hidden_dim=config.hidden_dim,
+            epochs=config.epochs,
+            lr=config.lr,
+            l2=config.l2,
+            loss_selection=config.loss_selection,
+            seed=config.seed * 10_000 + fold_idx,
         )
 
         _, _, train_probs = ffn_forward(x_train, model)
@@ -486,15 +506,11 @@ def run_single(args: ADPredictorConfig, output_dir: Path) -> dict[str, float | i
         test_auroc = roc_auc(y_test, test_probs)
         test_auprc = pr_auc(y_test, test_probs)
 
-        oof_probs[test_idx] = test_probs
-        oof_pred[test_idx] = test_pred
-        oof_fold[test_idx] = fold_idx
-
         fold_rows.append(
             {
                 "fold": int(fold_idx),
-                "n_train": int(len(train_idx)),
-                "n_test": int(len(test_idx)),
+                "n_train": int(len(train_genes)),
+                "n_test": int(len(test_genes)),
                 "n_test_pos": int((y_test == 1).sum()),
                 "n_test_neg": int((y_test == 0).sum()),
                 "train_accuracy": train_acc,
@@ -509,33 +525,41 @@ def run_single(args: ADPredictorConfig, output_dir: Path) -> dict[str, float | i
         loss_df_fold["fold"] = int(fold_idx)
         all_loss_history.append(loss_df_fold)
         train_acc_values.append(train_acc)
-        train_sizes.append(int(len(train_idx)))
-        test_sizes.append(int(len(test_idx)))
+        train_sizes.append(int(len(train_genes)))
+        test_sizes.append(int(len(test_genes)))
         pos_weights.append(pos_weight)
         neg_weights.append(neg_weight)
+        fold_pred_df = test_genes[["gene_symbol", "uniprot_accession", "label", "integrated_score"]].copy()
+        fold_pred_df["fold"] = int(fold_idx)
+        fold_pred_df["y_true"] = y_test.astype(int)
+        fold_pred_df["y_prob"] = test_probs
+        fold_pred_df["y_pred"] = test_pred
+        test_prediction_rows.append(fold_pred_df)
 
     print("[7/7] Evaluating pooled out-of-fold predictions and writing outputs...")
-    if np.any(oof_fold < 0):
-        raise RuntimeError("Some samples were not assigned an out-of-fold prediction.")
+    pred_df = pd.concat(test_prediction_rows, ignore_index=True)
+    y_true = pred_df["y_true"].to_numpy(dtype=int)
+    y_prob = pred_df["y_prob"].to_numpy(dtype=np.float64)
+    y_pred = pred_df["y_pred"].to_numpy(dtype=int)
 
     metrics = {
-        "label_shuffle": bool(args.label_shuffle),
-        "random_embeddings": bool(args.random_embeddings),
-        "loss_selection": args.loss_selection,
-        "num_folds": int(args.num_folds),
+        "label_shuffle": bool(config.label_shuffle),
+        "random_embeddings": bool(config.random_embeddings),
+        "loss_selection": config.loss_selection,
+        "num_folds": int(config.num_folds),
         "mean_pos_weight": float(np.mean(pos_weights)),
         "mean_neg_weight": float(np.mean(neg_weights)),
-        "n_samples": int(len(y)),
-        "n_pos": int((y == 1).sum()),
-        "n_neg": int((y == 0).sum()),
+        "n_samples": int(len(y_true)),
+        "n_pos": int((y_true == 1).sum()),
+        "n_neg": int((y_true == 0).sum()),
         "mean_train_size": float(np.mean(train_sizes)),
         "mean_test_size": float(np.mean(test_sizes)),
         "train_accuracy_mean": float(np.mean(train_acc_values)),
         "train_accuracy_std": float(np.std(train_acc_values, ddof=0)),
-        "test_accuracy": float((oof_pred == y.astype(int)).mean()),
-        "test_auroc": roc_auc(y, oof_probs),
-        "test_auprc": pr_auc(y, oof_probs),
-        "test_prevalence": float((y == 1).mean()),
+        "test_accuracy": float((y_pred == y_true).mean()),
+        "test_auroc": roc_auc(y_true, y_prob),
+        "test_auprc": pr_auc(y_true, y_prob),
+        "test_prevalence": float((y_true == 1).mean()),
     }
 
     with open(output_dir / "metrics.json", "w") as f:
@@ -543,14 +567,9 @@ def run_single(args: ADPredictorConfig, output_dir: Path) -> dict[str, float | i
 
     pd.DataFrame(fold_rows).to_csv(output_dir / "fold_metrics.csv", index=False)
 
-    pred_df = gene_df[["gene_symbol", "uniprot_accession", "label", "integrated_score"]].copy()
-    pred_df["fold"] = oof_fold.astype(int)
-    pred_df["y_true"] = y.astype(int)
-    pred_df["y_prob"] = oof_probs
-    pred_df["y_pred"] = oof_pred
     pred_df.to_csv(output_dir / "test_predictions.csv", index=False)
 
-    roc_fpr, roc_tpr = roc_curve_points(y, oof_probs)
+    roc_fpr, roc_tpr = roc_curve_points(y_true, y_prob)
     pd.DataFrame({"fpr": roc_fpr, "tpr": roc_tpr}).to_csv(output_dir / "roc_curve.csv", index=False)
     plt.figure(figsize=(6, 6))
     plt.plot(roc_fpr, roc_tpr, color="#F58518", label=f"AUROC = {metrics['test_auroc']:.3f}")
@@ -563,7 +582,7 @@ def run_single(args: ADPredictorConfig, output_dir: Path) -> dict[str, float | i
     plt.savefig(output_dir / "roc_curve.png", dpi=200)
     plt.close()
 
-    pr_recall, pr_precision = pr_curve_points(y, oof_probs)
+    pr_recall, pr_precision = pr_curve_points(y_true, y_prob)
     pd.DataFrame({"recall": pr_recall, "precision": pr_precision}).to_csv(output_dir / "pr_curve.csv", index=False)
     plt.figure(figsize=(6, 6))
     plt.plot(pr_recall, pr_precision, color="#54A24B", label=f"AUPRC = {metrics['test_auprc']:.3f}")
@@ -589,7 +608,7 @@ def run_single(args: ADPredictorConfig, output_dir: Path) -> dict[str, float | i
     plt.close()
 
     print(json.dumps(metrics, indent=2))
-    print(f"Wrote: {output_dir / 'hyperparameters.json'}")
+    print(f"Wrote: {output_dir / 'config.json'}")
     print(f"Wrote: {output_dir / 'labels_used.csv'}")
     print(f"Wrote: {output_dir / 'gene_to_uniprot_mapping.csv'}")
     print(f"Wrote: {output_dir / 'metrics.json'}")
