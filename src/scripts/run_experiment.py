@@ -8,23 +8,18 @@ One-click usage:
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import csv
 import json
-import os
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from urllib.error import URLError
-from urllib.request import urlopen
 
 import yaml
 
 
 DEFAULT_EXPERIMENT_NAME = "ad_predictor"
-DEFAULT_LOCAL_PREFECT_API_URL = "http://127.0.0.1:4200/api"
-PREFECT_TASK_RUNNER_MAX_WORKERS_ENV = "PREFECT_TASK_RUNNER_THREAD_POOL_MAX_WORKERS"
-LOCAL_PREFECT_HEALTHCHECK_URL = f"{DEFAULT_LOCAL_PREFECT_API_URL}/health"
 
 
 def _positive_int(value: str) -> int:
@@ -41,7 +36,6 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--results-dir", type=Path, default=Path("results"))
     p.add_argument("--bootstrap-data", action="store_true")
-    p.add_argument("--local-server", action="store_true")
     p.add_argument("--num-threads", type=_positive_int, default=6)
     p.add_argument(
         "script_args",
@@ -49,28 +43,6 @@ def parse_args() -> argparse.Namespace:
         help="Additional arguments passed through to the experiment script after `--`.",
     )
     return p.parse_args()
-
-
-def _bootstrap_prefect_api_url() -> None:
-    """Force subprocesses launched by this script to target the local Prefect server endpoint."""
-    os.environ["PREFECT_API_URL"] = DEFAULT_LOCAL_PREFECT_API_URL
-
-
-def _require_local_prefect_server() -> None:
-    """Fail fast when --local-server is requested but the local Prefect API is not reachable."""
-    try:
-        with urlopen(LOCAL_PREFECT_HEALTHCHECK_URL, timeout=2) as response:
-            if response.status >= 400:
-                raise RuntimeError(
-                    f"Local Prefect server health check failed with HTTP {response.status}: {LOCAL_PREFECT_HEALTHCHECK_URL}"
-                )
-            else:
-                print(f"Local Prefect server is healthy at {LOCAL_PREFECT_HEALTHCHECK_URL}.")
-    except URLError as exc:
-        raise RuntimeError(
-            "The local Prefect server is required by --local-server but was not reachable at "
-            f"{LOCAL_PREFECT_HEALTHCHECK_URL}."
-        ) from exc
 
 
 def resolve_experiment_paths(experiment_name: str) -> tuple[Path, Path, Path]:
@@ -243,64 +215,43 @@ def _write_summary_by_ablation(rows: list[dict[str, object]], path: Path) -> Non
     _write_summary_csv(summary_rows, path)
 
 
-def _subprocess_task_run_name(parameters: dict[str, object]) -> str:
-    run_spec = parameters["run_spec"]
-    return f"{run_spec['experiment_name']}_{run_spec['ablation_name']}"
+def _run_subprocess(run_spec: dict[str, object]) -> dict[str, object]:
+    command = list(run_spec["cmd"])
+    output_dir = Path(str(run_spec["output_dir"]))
+    output_dir.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.run(command, check=False)
+    if proc.returncode != 0:
+        raise RuntimeError(f"Experiment subprocess failed with exit code {proc.returncode}.")
+    metrics = json.loads((output_dir / "metrics.json").read_text())
+    return {
+        "ablation_name": str(run_spec["ablation_name"]),
+        "seed": int(run_spec["seed"]),
+        **run_spec["run_overrides"],
+        **metrics,
+    }
 
 
-def run_experiment_flow(
-    experiment_name: str,
+def run_experiment(
     root_dir: Path,
     config_path: Path,
     runs: list[dict[str, object]],
     num_threads: int | None,
 ) -> None:
-    from prefect import flow, task
-    from prefect.task_runners import ThreadPoolTaskRunner
-
-    task_runner = ThreadPoolTaskRunner(max_workers=num_threads) if num_threads is not None else ThreadPoolTaskRunner()
-
-    @task(name="run-experiment-subprocess", task_run_name=_subprocess_task_run_name)
-    def _run_subprocess(run_spec: dict[str, object]) -> dict[str, object]:
-        command = list(run_spec["cmd"])
-        output_dir = Path(str(run_spec["output_dir"]))
-        output_dir.mkdir(parents=True, exist_ok=True)
-        proc = subprocess.run(command, check=False)
-        if proc.returncode != 0:
-            raise RuntimeError(f"Experiment subprocess failed with exit code {proc.returncode}.")
-        metrics = json.loads((output_dir / "metrics.json").read_text())
-        return {
-            "ablation_name": str(run_spec["ablation_name"]),
-            "seed": int(run_spec["seed"]),
-            **run_spec["run_overrides"],
-            **metrics,
-        }
-
-    @flow(name="run-experiment", flow_run_name=experiment_name, task_runner=task_runner)
-    def _run() -> None:
-        root_dir.mkdir(parents=True, exist_ok=True)
-        (root_dir / "config.snapshot.yaml").write_text(config_path.read_text())
-        futures = []
-        for run_spec in runs:
-            futures.append(_run_subprocess.submit(run_spec))
-        rows = [future.result() for future in futures]
-        _write_summary_csv(rows, root_dir / "summary.csv")
-        _write_summary_by_ablation(rows, root_dir / "summary_by_ablation.csv")
-        print(f"Wrote: {root_dir / 'summary.csv'}")
-        print(f"Wrote: {root_dir / 'summary_by_ablation.csv'}")
-
-    _run()
+    root_dir.mkdir(parents=True, exist_ok=True)
+    (root_dir / "config.snapshot.yaml").write_text(config_path.read_text())
+    with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
+        rows = list(executor.map(_run_subprocess, runs))
+    _write_summary_csv(rows, root_dir / "summary.csv")
+    _write_summary_by_ablation(rows, root_dir / "summary_by_ablation.csv")
+    print(f"Wrote: {root_dir / 'summary.csv'}")
+    print(f"Wrote: {root_dir / 'summary_by_ablation.csv'}")
 
 
 def main() -> None:
     args = parse_args()
-    if args.local_server:
-        _bootstrap_prefect_api_url()
-        _require_local_prefect_server()
-
     ensure_bootstrap_data(bootstrap_data=args.bootstrap_data)
     root_dir, config_path, runs = _load_experiment_spec(args.experiment_name, args.results_dir, args.script_args)
-    run_experiment_flow(args.experiment_name, root_dir, config_path, runs, args.num_threads)
+    run_experiment(root_dir, config_path, runs, args.num_threads)
 
 
 if __name__ == "__main__":

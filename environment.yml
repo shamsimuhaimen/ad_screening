@@ -12,6 +12,3 @@ dependencies:
   - matplotlib
   - seaborn
   - pyyaml
-  - pip:
-      - asyncpg
-      - prefect
