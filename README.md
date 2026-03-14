@@ -18,10 +18,10 @@ Run the AD predictor experiment with:
 `python src/scripts/run_experiment.py --experiment ad_predictor`
 
 Relationship between the pieces:
-- An experiment file such as [`experiments/ad_predictor.yaml`](/mnt/perma/ad_screening/experiments/ad_predictor.yaml) defines the sweep: defaults, seed count, and ablation-specific overrides.
-- [`src/scripts/run_experiment.py`](/mnt/perma/ad_screening/src/scripts/run_experiment.py) is the orchestrator. It reads `experiments/{name}.yaml`, expands that config into concrete runs, and calls the matching package implementation.
-- An implementation such as [`src/package/ad_predictor.py`](/mnt/perma/ad_screening/src/package/ad_predictor.py) executes one concrete run through `run_ad_predictor(...)`, using the experiment YAML plus the selected ablation, seed, and output directory.
-- Outputs for a launcher run are written under `results/{experiment_name}/experiment_runs_<timestamp>/...`, with one subdirectory per ablation and seed.
+- An experiment file such as [`experiments/ad_predictor.yaml`](/mnt/perma/ad_screening/experiments/ad_predictor.yaml) defines a sweep. It declares the implementation name, shared defaults, the number of seeds, and the ablation-specific overrides.
+- [`src/scripts/run_experiment.py`](/mnt/perma/ad_screening/src/scripts/run_experiment.py) is the orchestrator. It loads `experiments/{name}.yaml`, expands the ablations and seeds into concrete runs, and dispatches each run to the requested implementation.
+- The implementation for `ad_predictor` lives in [`src/package/ad_predictor.py`](/mnt/perma/ad_screening/src/package/ad_predictor.py). It exposes `run_ad_predictor(...)`, which receives the experiment YAML, the selected ablation name, the seed, and the output directory for a single run.
+- Outputs are written under `results/{experiment_name}/experiment_runs_<timestamp>/...`, with one subdirectory per ablation and seed plus aggregate summaries at the run root.
 
 Basic usage:
 `python src/scripts/run_experiment.py --experiment ad_predictor`
@@ -32,7 +32,7 @@ Useful examples:
 - Write outputs to a custom directory: `python src/scripts/run_experiment.py --experiment ad_predictor --results-dir scratch_results`
 
 CLI flags:
-- `--experiment-name`: choose the experiment, matched to `experiments/{name}.yaml` and `results/{name}/...`
+- `--experiment`: choose the experiment, matched to `experiments/{name}.yaml` and `results/{name}/...`
 - `--bootstrap-data`: download missing required inputs before launching the run
 - `--num-threads`: set the maximum number of experiment runs the launcher executes concurrently
 - `--results-dir`: write run outputs somewhere other than `results/`

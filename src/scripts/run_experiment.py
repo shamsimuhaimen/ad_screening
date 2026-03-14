@@ -2,7 +2,7 @@
 """Launch a named experiment script.
 
 One-click usage:
-    python src/scripts/run_experiment.py --experiment-name ad_predictor
+    python src/scripts/run_experiment.py --experiment ad_predictor
 """
 
 from __future__ import annotations
@@ -36,9 +36,7 @@ def _positive_int(value: str) -> int:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument(
-        "--experiment-name", "--experiment", dest="experiment_name", type=str, default=DEFAULT_EXPERIMENT_NAME
-    )
+    p.add_argument("--experiment", dest="experiment_name", type=str, default=DEFAULT_EXPERIMENT_NAME)
     p.add_argument("--results-dir", type=Path, default=Path("results"))
     p.add_argument("--bootstrap-data", action="store_true")
     p.add_argument("--num-threads", type=_positive_int, default=6)
