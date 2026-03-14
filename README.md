@@ -29,40 +29,21 @@ Connection examples:
 Download and extract all datasets: `python src/scripts/download_data.py`
 
 ## Run Experiments
-The main runner is [`src/scripts/run_experiments.py`](/mnt/perma/ad_screening/src/scripts/run_experiments.py). If `docker/.env.postgres` exists, it auto-loads the local Postgres connection info and defaults `PREFECT_API_URL` to `http://127.0.0.1:4200/api`, so local runs target the Docker Compose Prefect server without extra shell setup.
-
-Available configs:
-- `experiments/exp_colab_test.yaml`
-- `experiments/exp_colab_all_ablations.yaml`
-- `experiments/exp_gcp_all_ablations_downscaled.yaml`
-- `experiments/exp_gcp_all_ablations.yaml`
-- `experiments/prefect_experiments_smoke.yaml`
-- `experiments/prefect_experiments_multiseed.yaml`
+The main launcher is [`src/scripts/run_experiment.py`](/mnt/perma/ad_screening/src/scripts/run_experiment.py). It takes an experiment name and resolves the matching config at `experiments/{name}.yaml`, the matching script at `src/scripts/{name}.py`, and writes outputs under `results/{name}/...`. The launcher is thin; each experiment script is responsible for running its own full sweep.
 
 Basic usage:
-`python src/scripts/run_experiments.py --config experiments/prefect_experiments_smoke.yaml`
+`python src/scripts/run_experiment.py --experiment-name ad_predictor`
 
 Useful examples:
-- First local run with automatic data bootstrap: `python src/scripts/run_experiments.py --config experiments/prefect_experiments_smoke.yaml --bootstrap-data --local-server`
-- Run with 4 Prefect task threads: `python src/scripts/run_experiments.py --config experiments/prefect_experiments_smoke.yaml --num-workers 4 --local-server`
-- Write outputs to a custom directory: `python src/scripts/run_experiments.py --config experiments/prefect_experiments_smoke.yaml --results-dir scratch_results --local-server`
-- Run the larger multiseed config: `python src/scripts/run_experiments.py --config experiments/prefect_experiments_multiseed.yaml --num-workers 4 --local-server`
-- Run the Colab-sized smoke test config: `python src/scripts/run_experiments.py --config experiments/exp_colab_test.yaml --bootstrap-data`
+- First local run with automatic data bootstrap: `python src/scripts/run_experiment.py --experiment-name ad_predictor --bootstrap-data --local-server`
+- Run with 4 Prefect task threads: `python src/scripts/run_experiment.py --experiment-name ad_predictor --num-workers 4 --local-server`
+- Write outputs to a custom directory: `python src/scripts/run_experiment.py --experiment-name ad_predictor --results-dir scratch_results --local-server`
+- Override the config path explicitly: `python src/scripts/run_experiment.py --experiment-name ad_predictor --config experiments/ad_predictor.yaml`
+- Run the experiment script directly: `python src/scripts/ad_predictor.py --config experiments/ad_predictor.yaml --results-dir results/ad_predictor`
 
 CLI flags:
-- `--config`: choose the experiment YAML file
+- `--experiment-name`: choose the experiment, matched across `experiments/`, `src/scripts/`, and `results/`
+- `--config`: override the default experiment YAML path when needed
 - `--bootstrap-data`: download missing required inputs before launching the run
-- `--num-workers`: set `PREFECT_TASK_RUNNER_THREAD_POOL_MAX_WORKERS`
 - `--local-server`: explicitly target the local Prefect API at `http://127.0.0.1:4200/api`
 - `--results-dir`: write run outputs somewhere other than `results/`
-
-Each run root now includes reproducibility manifests:
-- `dependency_manifest.json` (Python/Conda environment snapshot, pip freeze, lockfile hashes)
-
-Workflow graph structure in Prefect:
-- Parent flow: `ad-screening-experiment-batch`
-- `ad-screening-experiment-batch` runs one full experiment config end to end. It prepares shared cohort artifacts, writes the dependency manifest, builds the experiment matrix, submits one child flow per matrix entry, and writes the top-level summary outputs.
-- Parent flow tasks: ensure/download data, dependency manifest, summary artifacts
-- Child flow per matrix entry: `ad-screening-experiment-run`
-- `ad-screening-experiment-run` executes one matrix row. It materializes labels for that specific cohort/baseline/seed combination, runs the classifier probe, PPI signal analysis, and cosine-PPI hops analysis, then writes the per-run manifest and summary row.
-- Per-run tasks: materialize labels, classifier probe, PPI signal, cosine hops, run manifest, summary row (classifier + PPI + hops metrics)
