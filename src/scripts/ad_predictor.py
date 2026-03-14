@@ -21,25 +21,10 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import yaml
-
-
-PATH_ARG_KEYS = {
-    "config",
-    "results_dir",
-    "output_dir",
-    "data_dir",
-    "ad_genes_path",
-    "hgnc_mapping_path",
-    "embeddings_npy",
-    "names_npy",
-    "split_file",
-}
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--config", type=Path, default=None)
     p.add_argument("--results-dir", type=Path, default=Path("results/ad_predictor"))
     p.add_argument("--output-dir", type=Path, default=None)
     p.add_argument("--data-dir", type=Path, default=Path("data/raw/bulk_rna_seq_human_brain"))
@@ -675,93 +660,8 @@ def run_single(args: argparse.Namespace, output_dir: Path) -> dict[str, float | 
     return metrics
 
 
-def _namespace_from_overrides(base: dict[str, object], overrides: dict[str, object]) -> argparse.Namespace:
-    payload = dict(base)
-    payload.update(overrides)
-    for key in PATH_ARG_KEYS:
-        value = payload.get(key)
-        if value is not None and not isinstance(value, Path):
-            payload[key] = Path(value)
-    return argparse.Namespace(**payload)
-
-
-def run_config_experiment(args: argparse.Namespace) -> Path:
-    cfg = yaml.safe_load(args.config.read_text())
-    expected_script = Path("src/scripts/ad_predictor.py")
-    configured_script = Path(str(cfg.get("script", "")))
-    if configured_script != expected_script:
-        raise ValueError(f"Config script mismatch: expected `{expected_script}`, found `{configured_script}`.")
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    root_dir = args.results_dir / f"experiment_runs_{timestamp}"
-    root_dir.mkdir(parents=True, exist_ok=True)
-    (root_dir / "config.snapshot.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False))
-
-    defaults = {k: v for k, v in cfg.get("defaults", {}).items()}
-    parser_defaults = vars(build_parser().parse_args([]))
-    actual_args = vars(args).copy()
-    base_args = dict(parser_defaults)
-    base_args.update(defaults)
-    for key, value in actual_args.items():
-        if key not in parser_defaults or value != parser_defaults[key]:
-            base_args[key] = value
-    base_args["config"] = args.config
-    base_args["results_dir"] = args.results_dir
-    base_args["output_dir"] = None
-
-    rows: list[dict[str, object]] = []
-    ablations = cfg.get("ablations", [])
-    seeds = cfg.get("seeds", [])
-    if not ablations or not seeds:
-        raise ValueError("Experiment config must define non-empty `ablations` and `seeds`.")
-
-    for ablation_cfg in ablations:
-        ablation_name = str(ablation_cfg["name"])
-        run_overrides = {
-            "ablation": ablation_cfg.get("cli_ablation", defaults.get("ablation", "embedding")),
-            "hidden_dim": int(ablation_cfg.get("hidden_dim", defaults.get("hidden_dim", 64))),
-            "loss_selection": str(ablation_cfg.get("loss_selection", defaults.get("loss_selection", "bce"))),
-        }
-        for seed in seeds:
-            run_args = _namespace_from_overrides(base_args, {**run_overrides, "seed": int(seed)})
-            run_dir = root_dir / "runs" / ablation_name / f"seed_{int(seed)}"
-            print(f"[run] ablation={ablation_name} seed={int(seed)} -> {run_dir}")
-            metrics = run_single(run_args, output_dir=run_dir)
-            row = {
-                "ablation_name": ablation_name,
-                "cli_ablation": run_args.ablation,
-                "seed": int(seed),
-                "hidden_dim": int(run_args.hidden_dim),
-                "loss_selection": str(run_args.loss_selection),
-                **metrics,
-            }
-            rows.append(row)
-
-    summary_df = pd.DataFrame(rows)
-    summary_df.to_csv(root_dir / "summary.csv", index=False)
-    summary_by_ablation = (
-        summary_df.groupby("ablation_name", as_index=False)
-        .agg(
-            mean_test_accuracy=("test_accuracy", "mean"),
-            mean_test_auroc=("test_auroc", "mean"),
-            mean_test_auprc=("test_auprc", "mean"),
-            mean_train_accuracy=("train_accuracy", "mean"),
-        )
-        .sort_values("mean_test_auprc", ascending=False)
-    )
-    summary_by_ablation.to_csv(root_dir / "summary_by_ablation.csv", index=False)
-    print(f"Wrote: {root_dir / 'summary.csv'}")
-    print(f"Wrote: {root_dir / 'summary_by_ablation.csv'}")
-    return root_dir
-
-
 def main() -> None:
     args = parse_args()
-    if args.config is not None:
-        out = run_config_experiment(args)
-        print(f"Wrote: {out}")
-        return
-
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = args.output_dir or (
         args.results_dir / f"ad_predictor_{timestamp}_{args.ablation}_{args.loss_selection}"

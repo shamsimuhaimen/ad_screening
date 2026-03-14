@@ -8,15 +8,30 @@ One-click usage:
 from __future__ import annotations
 
 import argparse
+import csv
+import json
 import os
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
+from urllib.error import URLError
+from urllib.request import urlopen
+
+import yaml
 
 
 DEFAULT_EXPERIMENT_NAME = "ad_predictor"
-POSTGRES_ENV_FILE = Path("docker/.env.postgres")
 DEFAULT_LOCAL_PREFECT_API_URL = "http://127.0.0.1:4200/api"
+PREFECT_TASK_RUNNER_MAX_WORKERS_ENV = "PREFECT_TASK_RUNNER_THREAD_POOL_MAX_WORKERS"
+LOCAL_PREFECT_HEALTHCHECK_URL = f"{DEFAULT_LOCAL_PREFECT_API_URL}/health"
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
 
 
 def parse_args() -> argparse.Namespace:
@@ -24,10 +39,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--experiment-name", "--experiment", dest="experiment_name", type=str, default=DEFAULT_EXPERIMENT_NAME
     )
-    p.add_argument("--config", type=Path, default=None)
     p.add_argument("--results-dir", type=Path, default=Path("results"))
     p.add_argument("--bootstrap-data", action="store_true")
     p.add_argument("--local-server", action="store_true")
+    p.add_argument("--num-threads", type=_positive_int, default=6)
     p.add_argument(
         "script_args",
         nargs=argparse.REMAINDER,
@@ -36,48 +51,30 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _parse_env_file(path: Path) -> dict[str, str]:
-    values: dict[str, str] = {}
-    if not path.exists():
-        return values
-    for raw_line in path.read_text().splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip("'\"")
-        if key:
-            values[key] = value
-    return values
-
-
-def _bootstrap_prefect_database_env() -> None:
-    if os.environ.get("PREFECT_API_DATABASE_CONNECTION_URL"):
-        return
-    pg_env = _parse_env_file(POSTGRES_ENV_FILE)
-    if not pg_env:
-        return
-
-    db = pg_env.get("POSTGRES_DB")
-    user = pg_env.get("POSTGRES_USER")
-    password = pg_env.get("POSTGRES_PASSWORD")
-    if not all([db, user, password]):
-        return
-
-    port = pg_env.get("POSTGRES_PORT", "5432")
-    os.environ["PREFECT_API_DATABASE_CONNECTION_URL"] = f"postgresql+asyncpg://{user}:{password}@127.0.0.1:{port}/{db}"
-
-
 def _bootstrap_prefect_api_url() -> None:
-    if os.environ.get("PREFECT_API_URL"):
-        return
-    if POSTGRES_ENV_FILE.exists():
-        os.environ["PREFECT_API_URL"] = DEFAULT_LOCAL_PREFECT_API_URL
+    """Force subprocesses launched by this script to target the local Prefect server endpoint."""
+    os.environ["PREFECT_API_URL"] = DEFAULT_LOCAL_PREFECT_API_URL
 
 
-def resolve_experiment_paths(experiment_name: str, config_override: Path | None) -> tuple[Path, Path, Path]:
-    config_path = config_override or Path("experiments") / f"{experiment_name}.yaml"
+def _require_local_prefect_server() -> None:
+    """Fail fast when --local-server is requested but the local Prefect API is not reachable."""
+    try:
+        with urlopen(LOCAL_PREFECT_HEALTHCHECK_URL, timeout=2) as response:
+            if response.status >= 400:
+                raise RuntimeError(
+                    f"Local Prefect server health check failed with HTTP {response.status}: {LOCAL_PREFECT_HEALTHCHECK_URL}"
+                )
+            else:
+                print(f"Local Prefect server is healthy at {LOCAL_PREFECT_HEALTHCHECK_URL}.")
+    except URLError as exc:
+        raise RuntimeError(
+            "The local Prefect server is required by --local-server but was not reachable at "
+            f"{LOCAL_PREFECT_HEALTHCHECK_URL}."
+        ) from exc
+
+
+def resolve_experiment_paths(experiment_name: str) -> tuple[Path, Path, Path]:
+    config_path = Path("experiments") / f"{experiment_name}.yaml"
     script_path = Path("src/scripts") / f"{experiment_name}.py"
     results_path = Path("results") / experiment_name
     return config_path, script_path, results_path
@@ -114,38 +111,199 @@ def ensure_bootstrap_data(bootstrap_data: bool) -> None:
         raise RuntimeError("Bootstrap download failed.")
 
 
-def main() -> None:
-    args = parse_args()
-    _bootstrap_prefect_database_env()
-    if args.local_server:
-        _bootstrap_prefect_api_url()
+def _passthrough_args(script_args: list[str]) -> list[str]:
+    passthrough = script_args
+    if passthrough and passthrough[0] == "--":
+        passthrough = passthrough[1:]
+    return passthrough
 
-    ensure_bootstrap_data(bootstrap_data=args.bootstrap_data)
 
-    config_path, script_path, default_results_path = resolve_experiment_paths(args.experiment_name, args.config)
-    results_path = args.results_dir / args.experiment_name if args.results_dir == Path("results") else args.results_dir
+def _cli_flag(name: str) -> str:
+    return f"--{name.replace('_', '-')}"
+
+
+def _stringify_arg(value: object) -> str:
+    if isinstance(value, Path):
+        return str(value)
+    return str(value)
+
+
+def _resolve_seeds(num_seeds: int, default_seed: int) -> list[int]:
+    return list(range(default_seed, default_seed + num_seeds))
+
+
+def _build_single_run_command(
+    script_path: Path,
+    output_dir: Path,
+    base_args: dict[str, object],
+    run_overrides: dict[str, object],
+    passthrough: list[str],
+) -> list[str]:
+    cmd = [sys.executable, str(script_path), "--output-dir", str(output_dir)]
+    merged_args = dict(base_args)
+    merged_args.update(run_overrides)
+    for key, value in merged_args.items():
+        if value is None:
+            continue
+        cmd.extend([_cli_flag(key), _stringify_arg(value)])
+    cmd.extend(passthrough)
+    return cmd
+
+
+def _load_experiment_spec(
+    experiment_name: str,
+    results_dir: Path,
+    script_args: list[str],
+) -> tuple[Path, Path, list[dict[str, object]]]:
+    config_path, script_path, _ = resolve_experiment_paths(experiment_name)
+    root_results_dir = results_dir / experiment_name if results_dir == Path("results") else results_dir
 
     if not config_path.exists():
         raise FileNotFoundError(f"Experiment config not found: {config_path}")
     if not script_path.exists():
         raise FileNotFoundError(f"Experiment script not found: {script_path}")
 
-    cmd = [
-        sys.executable,
-        str(script_path),
-        "--config",
-        str(config_path),
-        "--results-dir",
-        str(results_path if args.results_dir != Path("results") else default_results_path),
-    ]
-    passthrough = args.script_args
-    if passthrough and passthrough[0] == "--":
-        passthrough = passthrough[1:]
-    cmd.extend(passthrough)
+    cfg = yaml.safe_load(config_path.read_text())
+    expected_script = Path(str(cfg.get("script", "")))
+    if expected_script != script_path:
+        raise ValueError(f"Config script mismatch: expected `{script_path}`, found `{expected_script}`.")
 
-    proc = subprocess.run(cmd, check=False)
-    if proc.returncode != 0:
-        raise SystemExit(proc.returncode)
+    defaults = dict(cfg.get("defaults", {}))
+    if not defaults:
+        raise ValueError("Experiment config must define `defaults`.")
+
+    seeds = _resolve_seeds(int(cfg["seeds"]), int(defaults.get("seed", 42)))
+    ablations = cfg.get("ablations", [])
+    if not ablations:
+        raise ValueError("Experiment config must define non-empty `ablations`.")
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    root_dir = root_results_dir / f"experiment_runs_{timestamp}"
+    runs: list[dict[str, object]] = []
+    passthrough = _passthrough_args(script_args)
+    for ablation_cfg in ablations:
+        ablation_name = str(ablation_cfg["name"])
+        ablation_overrides = {
+            "ablation": ablation_cfg.get("cli_ablation", defaults.get("ablation", "embedding")),
+            "hidden_dim": int(ablation_cfg.get("hidden_dim", defaults.get("hidden_dim", 64))),
+            "loss_selection": str(ablation_cfg.get("loss_selection", defaults.get("loss_selection", "bce"))),
+        }
+        for seed in seeds:
+            run_dir = root_dir / "runs" / ablation_name / f"seed_{int(seed)}"
+            run_overrides = {**ablation_overrides, "seed": int(seed)}
+            cmd = _build_single_run_command(script_path, run_dir, defaults, run_overrides, passthrough)
+            runs.append(
+                {
+                    "experiment_name": experiment_name,
+                    "ablation_name": ablation_name,
+                    "seed": int(seed),
+                    "cmd": cmd,
+                    "output_dir": run_dir,
+                    "run_overrides": run_overrides,
+                }
+            )
+
+    return root_dir, config_path, runs
+
+
+def _write_summary_csv(rows: list[dict[str, object]], path: Path) -> None:
+    if not rows:
+        raise ValueError("No run rows available for summary output.")
+    fieldnames: list[str] = list(rows[0].keys())
+    for row in rows[1:]:
+        for key in row.keys():
+            if key not in fieldnames:
+                fieldnames.append(key)
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _mean(values: list[float]) -> float:
+    return float(sum(values) / len(values))
+
+
+def _write_summary_by_ablation(rows: list[dict[str, object]], path: Path) -> None:
+    grouped: dict[str, list[dict[str, object]]] = {}
+    for row in rows:
+        grouped.setdefault(str(row["ablation_name"]), []).append(row)
+
+    summary_rows: list[dict[str, object]] = []
+    for ablation_name, group_rows in grouped.items():
+        summary_rows.append(
+            {
+                "ablation_name": ablation_name,
+                "mean_test_accuracy": _mean([float(row["test_accuracy"]) for row in group_rows]),
+                "mean_test_auroc": _mean([float(row["test_auroc"]) for row in group_rows]),
+                "mean_test_auprc": _mean([float(row["test_auprc"]) for row in group_rows]),
+                "mean_train_accuracy": _mean([float(row["train_accuracy_mean"]) for row in group_rows]),
+            }
+        )
+    summary_rows.sort(key=lambda row: float(row["mean_test_auprc"]), reverse=True)
+    _write_summary_csv(summary_rows, path)
+
+
+def _subprocess_task_run_name(parameters: dict[str, object]) -> str:
+    run_spec = parameters["run_spec"]
+    return f"{run_spec['experiment_name']}_{run_spec['ablation_name']}"
+
+
+def run_experiment_flow(
+    experiment_name: str,
+    root_dir: Path,
+    config_path: Path,
+    runs: list[dict[str, object]],
+    num_threads: int | None,
+) -> None:
+    from prefect import flow, task
+    from prefect.task_runners import ThreadPoolTaskRunner
+
+    task_runner = ThreadPoolTaskRunner(max_workers=num_threads) if num_threads is not None else ThreadPoolTaskRunner()
+
+    @task(name="run-experiment-subprocess", task_run_name=_subprocess_task_run_name)
+    def _run_subprocess(run_spec: dict[str, object]) -> dict[str, object]:
+        command = list(run_spec["cmd"])
+        output_dir = Path(str(run_spec["output_dir"]))
+        output_dir.mkdir(parents=True, exist_ok=True)
+        proc = subprocess.run(command, check=False)
+        if proc.returncode != 0:
+            raise RuntimeError(f"Experiment subprocess failed with exit code {proc.returncode}.")
+        metrics = json.loads((output_dir / "metrics.json").read_text())
+        return {
+            "ablation_name": str(run_spec["ablation_name"]),
+            "seed": int(run_spec["seed"]),
+            "cli_ablation": str(run_spec["run_overrides"]["ablation"]),
+            "hidden_dim": int(run_spec["run_overrides"]["hidden_dim"]),
+            "loss_selection": str(run_spec["run_overrides"]["loss_selection"]),
+            **metrics,
+        }
+
+    @flow(name="run-experiment", flow_run_name=experiment_name, task_runner=task_runner)
+    def _run() -> None:
+        root_dir.mkdir(parents=True, exist_ok=True)
+        (root_dir / "config.snapshot.yaml").write_text(config_path.read_text())
+        futures = []
+        for run_spec in runs:
+            futures.append(_run_subprocess.submit(run_spec))
+        rows = [future.result() for future in futures]
+        _write_summary_csv(rows, root_dir / "summary.csv")
+        _write_summary_by_ablation(rows, root_dir / "summary_by_ablation.csv")
+        print(f"Wrote: {root_dir / 'summary.csv'}")
+        print(f"Wrote: {root_dir / 'summary_by_ablation.csv'}")
+
+    _run()
+
+
+def main() -> None:
+    args = parse_args()
+    if args.local_server:
+        _bootstrap_prefect_api_url()
+        _require_local_prefect_server()
+
+    ensure_bootstrap_data(bootstrap_data=args.bootstrap_data)
+    root_dir, config_path, runs = _load_experiment_spec(args.experiment_name, args.results_dir, args.script_args)
+    run_experiment_flow(args.experiment_name, root_dir, config_path, runs, args.num_threads)
 
 
 if __name__ == "__main__":

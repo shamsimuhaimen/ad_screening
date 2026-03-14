@@ -29,21 +29,20 @@ Connection examples:
 Download and extract all datasets: `python src/scripts/download_data.py`
 
 ## Run Experiments
-The main launcher is [`src/scripts/run_experiment.py`](/mnt/perma/ad_screening/src/scripts/run_experiment.py). It takes an experiment name and resolves the matching config at `experiments/{name}.yaml`, the matching script at `src/scripts/{name}.py`, and writes outputs under `results/{name}/...`. The launcher is thin; each experiment script is responsible for running its own full sweep.
+The main launcher is [`src/scripts/run_experiment.py`](/mnt/perma/ad_screening/src/scripts/run_experiment.py). It takes an experiment name and resolves the matching config at `experiments/{name}.yaml`, the matching script at `src/scripts/{name}.py`, and writes outputs under `results/{name}/...`. The launcher owns Prefect integration and experiment-YAML expansion, then executes fully specified `ad_predictor.py` subprocesses so the experiment script itself only accepts raw CLI arguments.
 
 Basic usage:
 `python src/scripts/run_experiment.py --experiment-name ad_predictor`
 
 Useful examples:
 - First local run with automatic data bootstrap: `python src/scripts/run_experiment.py --experiment-name ad_predictor --bootstrap-data --local-server`
-- Run with 4 Prefect task threads: `python src/scripts/run_experiment.py --experiment-name ad_predictor --num-workers 4 --local-server`
+- Run with 4 Prefect task threads: `python src/scripts/run_experiment.py --experiment-name ad_predictor --num-threads 4 --local-server`
 - Write outputs to a custom directory: `python src/scripts/run_experiment.py --experiment-name ad_predictor --results-dir scratch_results --local-server`
-- Override the config path explicitly: `python src/scripts/run_experiment.py --experiment-name ad_predictor --config experiments/ad_predictor.yaml`
-- Run the experiment script directly: `python src/scripts/ad_predictor.py --config experiments/ad_predictor.yaml --results-dir results/ad_predictor`
+- Run the experiment script directly for one concrete configuration: `python src/scripts/ad_predictor.py --output-dir results/ad_predictor/manual_run --seed 42 --ablation embedding --hidden-dim 64 --loss-selection bce`
 
 CLI flags:
 - `--experiment-name`: choose the experiment, matched across `experiments/`, `src/scripts/`, and `results/`
-- `--config`: override the default experiment YAML path when needed
 - `--bootstrap-data`: download missing required inputs before launching the run
-- `--local-server`: explicitly target the local Prefect API at `http://127.0.0.1:4200/api`
+- `--local-server`: force the launcher's Prefect flow run to register against the local Prefect API at `http://127.0.0.1:4200/api` and fail fast if that server is unavailable
+- `--num-threads`: set `PREFECT_TASK_RUNNER_THREAD_POOL_MAX_WORKERS` plus common BLAS/OpenMP thread env vars for the launched experiment process
 - `--results-dir`: write run outputs somewhere other than `results/`
