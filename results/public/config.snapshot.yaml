@@ -1,0 +1,58 @@
+implementation: ad_predictor
+
+defaults:
+  data_dir: data/raw/bulk_rna_seq_human_brain
+  ad_genes_path: data/processed/ad_genes.csv
+  hgnc_mapping_path: data/download/hgnc_complete_set.txt
+  embeddings_npy: data/download/dtwg_af_embeddings.npy
+  names_npy: data/download/dtwg_af_names_.npy
+  controls_per_ad: 2
+  min_global_expression: 1.0e-6
+  num_folds: 5
+  epochs: 200
+  lr: 0.001
+  l2: 1.0e-4
+  hidden_dim: 0
+  loss_selection: bce
+  label_shuffle: false
+  random_embeddings: false
+
+seeds: 10
+
+ablations:
+- name: ad_embedding
+  description: Train a linear probe on the real DrugCLIP embeddings with no hidden layer.
+
+- name: embedding_hidden_4
+  hidden_dim: 4
+  description: Train on the real DrugCLIP embeddings with a 4-unit hidden layer.
+
+- name: embedding_hidden_8
+  hidden_dim: 8
+  description: Train on the real DrugCLIP embeddings with an 8-unit hidden layer.
+
+- name: embedding_hidden_16
+  hidden_dim: 16
+  description: Train on the real DrugCLIP embeddings with a 16-unit hidden layer.
+
+- name: embedding_hidden_32
+  hidden_dim: 32
+  description: Train on the real DrugCLIP embeddings with a 32-unit hidden layer.
+
+- name: embedding_hidden_64
+  hidden_dim: 64
+  description: Train on the real DrugCLIP embeddings with a 64-unit hidden layer.
+
+- name: random_embedding
+  random_embeddings: true
+  description: Replace embeddings with Gaussian noise as an embedding ablation.
+
+- name: label_shuffle
+  label_shuffle: true
+  description: Shuffle training labels as a label-signal ablation.
+
+- name: weighted_bce
+  loss_selection: weighted_bce
+  description: >
+    Train on the real DrugCLIP embeddings with weighted binary cross-entropy,
+    using the training-fold class ratio to upweight the AD class.

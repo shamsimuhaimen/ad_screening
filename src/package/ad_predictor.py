@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from attrs import asdict, frozen
@@ -41,6 +40,7 @@ class ADPredictorConfig:
     loss_selection: str
     label_shuffle: bool
     random_embeddings: bool
+    debug_plots: bool = False
 
 
 def zscore(s: pd.Series) -> pd.Series:
@@ -571,41 +571,12 @@ def run_single(config: ADPredictorConfig, output_dir: Path) -> dict[str, float |
 
     roc_fpr, roc_tpr = roc_curve_points(y_true, y_prob)
     pd.DataFrame({"fpr": roc_fpr, "tpr": roc_tpr}).to_csv(output_dir / "roc_curve.csv", index=False)
-    plt.figure(figsize=(6, 6))
-    plt.plot(roc_fpr, roc_tpr, color="#F58518", label=f"AUROC = {metrics['test_auroc']:.3f}")
-    plt.plot([0.0, 1.0], [0.0, 1.0], linestyle="--", color="#9A9A9A", linewidth=1)
-    plt.xlabel("False Positive Rate")
-    plt.ylabel("True Positive Rate")
-    plt.title("ROC Curve")
-    plt.legend(loc="lower right")
-    plt.tight_layout()
-    plt.savefig(output_dir / "roc_curve.png", dpi=200)
-    plt.close()
 
     pr_recall, pr_precision = pr_curve_points(y_true, y_prob)
     pd.DataFrame({"recall": pr_recall, "precision": pr_precision}).to_csv(output_dir / "pr_curve.csv", index=False)
-    plt.figure(figsize=(6, 6))
-    plt.plot(pr_recall, pr_precision, color="#54A24B", label=f"AUPRC = {metrics['test_auprc']:.3f}")
-    plt.xlabel("Recall")
-    plt.ylabel("Precision")
-    plt.title("Precision-Recall Curve")
-    plt.legend(loc="lower left")
-    plt.tight_layout()
-    plt.savefig(output_dir / "pr_curve.png", dpi=200)
-    plt.close()
 
     loss_df = pd.concat(all_loss_history, ignore_index=True)
     loss_df.to_csv(output_dir / "loss_history.csv", index=False)
-    plt.figure(figsize=(8, 5))
-    plt.plot(loss_df["epoch"], loss_df["train_loss"], label="train_loss")
-    plt.plot(loss_df["epoch"], loss_df["test_loss"], label="test_loss")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.title("Training Curves")
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(output_dir / "loss_curve.png", dpi=200)
-    plt.close()
 
     print(json.dumps(metrics, indent=2))
     print(f"Wrote: {output_dir / 'config.json'}")
@@ -615,11 +586,8 @@ def run_single(config: ADPredictorConfig, output_dir: Path) -> dict[str, float |
     print(f"Wrote: {output_dir / 'fold_metrics.csv'}")
     print(f"Wrote: {output_dir / 'test_predictions.csv'}")
     print(f"Wrote: {output_dir / 'roc_curve.csv'}")
-    print(f"Wrote: {output_dir / 'roc_curve.png'}")
     print(f"Wrote: {output_dir / 'pr_curve.csv'}")
-    print(f"Wrote: {output_dir / 'pr_curve.png'}")
     print(f"Wrote: {output_dir / 'loss_history.csv'}")
-    print(f"Wrote: {output_dir / 'loss_curve.png'}")
     return metrics
 
 

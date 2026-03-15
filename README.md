@@ -1,5 +1,27 @@
 # Brain-region–aware, BBB-conditioned virtual screening for Alzheimer’s disease
 
+## Sample Results Dashboard
+The experiment runner writes per-run ROC, precision-recall, and loss curves for each ablation. Below is a sampled dashboard from `results/ad_predictor/experiment_runs_20260314_235446` generated on March 14, 2026 (UTC), using `seed_42` for each ablation.
+
+Experiment scale from [`results/ad_predictor/experiment_runs_20260314_235446/summary.csv`](/mnt/perma/ad_screening/results/ad_predictor/experiment_runs_20260314_235446/summary.csv): `762` total labeled protein samples, with `254` positives and `508` negatives. The reported metrics come from `5`-fold cross-validation, with an average split size of `609.6` train and `152.4` test samples per fold.
+
+Summary from [`results/ad_predictor/experiment_runs_20260314_235446/summary_by_ablation.csv`](/mnt/perma/ad_screening/results/ad_predictor/experiment_runs_20260314_235446/summary_by_ablation.csv):
+
+| Ablation | Mean test AUROC | Mean test AUPRC | Samples |
+| --- | ---: | ---: | ---: |
+| `weighted_bce` | 0.545 | 0.391 | 762 |
+| `random_embedding` | 0.518 | 0.354 | 762 |
+| `ad_embedding` | 0.515 | 0.350 | 762 |
+| `label_shuffle` | 0.483 | 0.338 | 762 |
+
+| `weighted_bce` | `random_embedding` | `ad_embedding` | `label_shuffle` |
+| --- | --- | --- | --- |
+| ![weighted_bce ROC](results/ad_predictor/experiment_runs_20260314_235446/runs/weighted_bce/seed_42/roc_curve.png) | ![random_embedding ROC](results/ad_predictor/experiment_runs_20260314_235446/runs/random_embedding/seed_42/roc_curve.png) | ![ad_embedding ROC](results/ad_predictor/experiment_runs_20260314_235446/runs/ad_embedding/seed_42/roc_curve.png) | ![label_shuffle ROC](results/ad_predictor/experiment_runs_20260314_235446/runs/label_shuffle/seed_42/roc_curve.png) |
+| ![weighted_bce PR](results/ad_predictor/experiment_runs_20260314_235446/runs/weighted_bce/seed_42/pr_curve.png) | ![random_embedding PR](results/ad_predictor/experiment_runs_20260314_235446/runs/random_embedding/seed_42/pr_curve.png) | ![ad_embedding PR](results/ad_predictor/experiment_runs_20260314_235446/runs/ad_embedding/seed_42/pr_curve.png) | ![label_shuffle PR](results/ad_predictor/experiment_runs_20260314_235446/runs/label_shuffle/seed_42/pr_curve.png) |
+| ![weighted_bce loss](results/ad_predictor/experiment_runs_20260314_235446/runs/weighted_bce/seed_42/loss_curve.png) | ![random_embedding loss](results/ad_predictor/experiment_runs_20260314_235446/runs/random_embedding/seed_42/loss_curve.png) | ![ad_embedding loss](results/ad_predictor/experiment_runs_20260314_235446/runs/ad_embedding/seed_42/loss_curve.png) | ![label_shuffle loss](results/ad_predictor/experiment_runs_20260314_235446/runs/label_shuffle/seed_42/loss_curve.png) |
+
+This gives a quick visual comparison between the weighted-loss variant, the learned AD embedding, and the two controls. To regenerate a similar dashboard, rerun the experiment and point the image links at the newest timestamped directory under `results/ad_predictor/`.
+
 ## Setup
 - Create the env: `conda env create -f environment.yml`
 - Activate it: `conda activate ad_screening`
