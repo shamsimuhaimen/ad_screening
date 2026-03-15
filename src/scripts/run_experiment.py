@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import csv
+import shutil
 import subprocess
 import sys
 from datetime import datetime
@@ -168,6 +169,19 @@ def _write_mean_curve_csv(rows: list[dict[str, object]], path: Path) -> None:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
+
+
+def _write_output_aliases(root_dir: Path, stem_pairs: list[tuple[str, str]]) -> None:
+    for source_stem, alias_stem in stem_pairs:
+        source_png = root_dir / f"{source_stem}.png"
+        alias_png = root_dir / f"{alias_stem}.png"
+        if source_png.exists():
+            shutil.copyfile(source_png, alias_png)
+
+        source_csv = root_dir / f"{source_stem}.csv"
+        alias_csv = root_dir / f"{alias_stem}.csv"
+        if source_csv.exists():
+            shutil.copyfile(source_csv, alias_csv)
 
 
 def _plot_mean_roc_by_ablation(
@@ -360,6 +374,13 @@ def _plot_grouped_aggregates(
         output_prefix=output_prefix,
         title_suffix=title_suffix,
     )
+    _write_output_aliases(
+        root_dir,
+        [
+            (f"{output_prefix}_roc_by_ablation", f"{output_prefix}_auroc_by_ablation"),
+            (f"{output_prefix}_pr_by_ablation", f"{output_prefix}_auprc_by_ablation"),
+        ],
+    )
 
 
 def _write_debug_plots(rows: list[dict[str, object]], root_dir: Path) -> None:
@@ -523,12 +544,16 @@ def run_experiment(
     print(f"Wrote: {root_dir / 'summary.csv'}")
     print(f"Wrote: {root_dir / 'summary_by_ablation.csv'}")
     print(f"Wrote: {root_dir / 'mean_roc_by_ablation.png'}")
+    print(f"Wrote: {root_dir / 'mean_auroc_by_ablation.png'}")
     print(f"Wrote: {root_dir / 'mean_pr_by_ablation.png'}")
+    print(f"Wrote: {root_dir / 'mean_auprc_by_ablation.png'}")
     print(f"Wrote: {root_dir / 'mean_loss_by_ablation.png'}")
     print(f"Wrote: {root_dir / 'mean_train_loss_by_ablation.png'}")
     print(f"Wrote: {root_dir / 'mean_test_loss_by_ablation.png'}")
     print(f"Wrote: {root_dir / 'hidden_only_mean_roc_by_ablation.png'}")
+    print(f"Wrote: {root_dir / 'hidden_only_mean_auroc_by_ablation.png'}")
     print(f"Wrote: {root_dir / 'hidden_only_mean_pr_by_ablation.png'}")
+    print(f"Wrote: {root_dir / 'hidden_only_mean_auprc_by_ablation.png'}")
     print(f"Wrote: {root_dir / 'hidden_only_mean_loss_by_ablation.png'}")
     print(f"Wrote: {root_dir / 'hidden_only_mean_train_loss_by_ablation.png'}")
     print(f"Wrote: {root_dir / 'hidden_only_mean_test_loss_by_ablation.png'}")

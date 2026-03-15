@@ -10,9 +10,9 @@ Summary from [`documents/readme/ad_predictor/summary_by_ablation.csv`](documents
 | Ablation | Mean test AUROC | Mean test AUPRC | Samples |
 | --- | ---: | ---: | ---: |
 | `weighted_bce` | 0.545 | 0.391 | 762 |
-| `random_embedding` | 0.518 | 0.354 | 762 |
-| `ad_embedding` | 0.515 | 0.350 | 762 |
-| `label_shuffle` | 0.483 | 0.338 | 762 |
+| `ad_embedding` | 0.533 | 0.374 | 762 |
+| `random_embedding` | 0.511 | 0.347 | 762 |
+| `label_shuffle` | 0.501 | 0.352 | 762 |
 
 Abbreviated meaning of each ablation:
 - `ad_embedding`: linear probe trained on the real DrugCLIP protein embeddings with standard binary cross-entropy.
@@ -25,6 +25,22 @@ Abbreviated meaning of each ablation:
 | ![Mean ROC by ablation](documents/readme/ad_predictor/mean_roc_by_ablation.png) | ![Mean PR by ablation](documents/readme/ad_predictor/mean_pr_by_ablation.png) | ![Mean loss by ablation](documents/readme/ad_predictor/mean_loss_by_ablation.png) |
 
 This gives a quick visual comparison of the aggregate ROC, precision-recall, and train/test loss behavior across ablations. Golden README artifacts should be updated manually in `documents/readme/ad_predictor/` when you want to refresh the dashboard.
+
+Hidden-width sweep for the real-embedding probe from the curated artifacts in `documents/readme/ad_predictor/`:
+
+| Hidden-width ablation | Mean test AUROC | Mean test AUPRC |
+| --- | ---: | ---: |
+| `embedding_hidden_16` | 0.514 | 0.352 |
+| `embedding_hidden_32` | 0.514 | 0.350 |
+| `embedding_hidden_64` | 0.509 | 0.345 |
+| `embedding_hidden_8` | 0.507 | 0.340 |
+| `embedding_hidden_4` | 0.500 | 0.341 |
+
+These hidden-width runs isolate the real-embedding architecture change only: no weighted BCE, random-embedding control, or label-shuffle control is included in this comparison.
+
+| Hidden Mean AUROC | Hidden Mean AUPRC | Real-Embedding Mean Loss |
+| --- | --- | --- |
+| ![Hidden mean AUROC by ablation](documents/readme/ad_predictor/hidden_only_mean_auroc_by_ablation.png) | ![Hidden mean AUPRC by ablation](documents/readme/ad_predictor/hidden_only_mean_auprc_by_ablation.png) | ![Real-embedding mean loss by ablation](documents/readme/ad_predictor/real_embedding_loss_by_ablation.png) |
 
 ## Setup
 - Create the env: `conda env create -f environment.yml`

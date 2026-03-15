@@ -1,279 +1,233 @@
 #!/usr/bin/env python3
-"""Render a results dashboard image for an experiment run."""
+"""Render aggregate AD predictor plots used by the README and milestone report."""
 
 from __future__ import annotations
 
 import argparse
-import csv
+import json
 import os
-import re
 import tempfile
-from datetime import datetime, timezone
 from pathlib import Path
 
 os.environ.setdefault("MPLCONFIGDIR", str(Path(tempfile.gettempdir()) / "matplotlib"))
 
 import matplotlib.pyplot as plt
-from matplotlib.gridspec import GridSpec
-from PIL import Image, ImageStat
+import pandas as pd
+from matplotlib.lines import Line2D
 
 
-DEFAULT_RUN_DIR = Path("results/ad_predictor/experiment_runs_20260314_235446")
-DEFAULT_OUTPUT_PATH = Path("results/ad_predictor_dashboard.png")
-DEFAULT_SEED = 42
-CURVE_FILES = (
-    ("roc_curve.png", "ROC"),
-    ("pr_curve.png", "PR"),
-    ("loss_curve.png", "Loss"),
-)
-NONBLANK_STDDEV_THRESHOLD = 1.0
+DEFAULT_RUN_DIR = Path("results/ad_predictor_full_report")
+DEFAULT_REAL_EMBEDDING_LOSS_NAME = "real_embedding_loss_by_ablation.png"
+PREFERRED_ABLATION_ORDER = [
+    "ad_embedding",
+    "embedding_hidden_4",
+    "embedding_hidden_8",
+    "embedding_hidden_16",
+    "embedding_hidden_32",
+    "embedding_hidden_64",
+]
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse CLI arguments for aggregate plot generation."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-dir", type=Path, default=DEFAULT_RUN_DIR)
-    parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
-    parser.add_argument("--output-path", type=Path, default=DEFAULT_OUTPUT_PATH)
-    parser.add_argument("--title", type=str, default="AD Predictor Results Dashboard")
+    parser.add_argument("--real-embedding-loss-output-path", type=Path, default=None)
     return parser.parse_args()
 
 
-def _read_csv_rows(path: Path) -> list[dict[str, str]]:
-    if not path.exists():
-        raise FileNotFoundError(f"Required CSV not found: {path}")
-    with path.open(newline="") as handle:
-        return list(csv.DictReader(handle))
+def _ordered_ablations(ablation_names: list[str]) -> list[str]:
+    """Sort ablations with the real-embedding baseline first, then hidden-width variants."""
+    preferred = [name for name in PREFERRED_ABLATION_ORDER if name in ablation_names]
+    remaining = sorted(name for name in ablation_names if name not in preferred)
+    return preferred + remaining
 
 
-def _sample_row(rows: list[dict[str, str]], seed: int) -> dict[str, str]:
-    if not rows:
-        raise ValueError("summary.csv is empty")
-    for row in rows:
-        if int(row["seed"]) == seed:
-            return row
-    available_seeds = sorted({int(row["seed"]) for row in rows})
-    raise ValueError(f"Seed {seed} not found in summary.csv. Available seeds: {available_seeds}")
+def _mean(values: list[float]) -> float:
+    return float(sum(values) / len(values))
 
 
-def _format_run_date(run_dir: Path) -> str:
-    match = re.search(r"experiment_runs_(\d{8})_(\d{6})", run_dir.name)
-    if not match:
-        return run_dir.name
-    dt = datetime.strptime("".join(match.groups()), "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
-    return dt.strftime("%Y-%m-%d %H:%M UTC")
-
-
-def _metric_value(row: dict[str, str], key: str) -> float:
-    return float(row[key])
-
-
-def _ablation_run_row(rows: list[dict[str, str]], ablation_name: str, seed: int) -> dict[str, str]:
-    for row in rows:
-        if row["ablation_name"] == ablation_name and int(row["seed"]) == seed:
-            return row
-    raise ValueError(f"No row found for ablation={ablation_name!r}, seed={seed}")
-
-
-def _build_scale_text(sample_row: dict[str, str]) -> str:
-    n_samples = int(round(float(sample_row["n_samples"])))
-    n_pos = int(round(float(sample_row["n_pos"])))
-    n_neg = int(round(float(sample_row["n_neg"])))
-    num_folds = int(round(float(sample_row["num_folds"])))
-    mean_train_size = float(sample_row["mean_train_size"])
-    mean_test_size = float(sample_row["mean_test_size"])
-    return (
-        f"Scale: {n_samples} samples ({n_pos} positive, {n_neg} negative)   "
-        f"CV: {num_folds} folds   Avg split: {mean_train_size:.1f} train / {mean_test_size:.1f} test"
-    )
-
-
-def _render_header(ax: plt.Axes, title: str, subtitle: str, scale_text: str) -> None:
-    ax.set_axis_off()
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.text(0.01, 0.78, title, fontsize=24, fontweight="bold", ha="left", va="center")
-    ax.text(0.01, 0.42, subtitle, fontsize=12, color="#444444", ha="left", va="center")
-    ax.text(0.01, 0.10, scale_text, fontsize=12, color="#222222", ha="left", va="center")
-
-
-def _render_metrics_row(
-    ax: plt.Axes,
-    summary_by_ablation_rows: list[dict[str, str]],
-    sample_row: dict[str, str],
-) -> None:
-    ax.set_axis_off()
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-
-    cards = [
-        ("Ablations", str(len(summary_by_ablation_rows))),
-        ("Samples", str(int(round(float(sample_row["n_samples"]))))),
-        ("Best AUROC", f"{max(_metric_value(row, 'mean_test_auroc') for row in summary_by_ablation_rows):.3f}"),
-        ("Best AUPRC", f"{max(_metric_value(row, 'mean_test_auprc') for row in summary_by_ablation_rows):.3f}"),
-    ]
-
-    card_width = 0.22
-    card_gap = 0.03
-    x_positions = [0.01 + idx * (card_width + card_gap) for idx in range(len(cards))]
-    for x_pos, (label, value) in zip(x_positions, cards):
-        ax.add_patch(
-            plt.Rectangle(
-                (x_pos, 0.10),
-                card_width,
-                0.80,
-                facecolor="#F5F7FA",
-                edgecolor="#D9E0E8",
-                linewidth=1.2,
-            )
-        )
-        ax.text(x_pos + 0.03, 0.62, value, fontsize=18, fontweight="bold", ha="left", va="center")
-        ax.text(x_pos + 0.03, 0.32, label, fontsize=10, color="#5B6573", ha="left", va="center")
-
-
-def _render_column_header(
-    ax: plt.Axes,
-    ablation_name: str,
-    summary_row: dict[str, str],
-    run_row: dict[str, str],
-) -> None:
-    ax.set_axis_off()
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.add_patch(
-        plt.Rectangle(
-            (0.0, 0.02),
-            1.0,
-            0.96,
-            facecolor="#EEF3F7",
-            edgecolor="#D9E0E8",
-            linewidth=1.0,
-        )
-    )
-    ax.text(0.04, 0.76, ablation_name, fontsize=13, fontweight="bold", ha="left", va="center")
-    ax.text(
-        0.04,
-        0.45,
-        f"Mean AUROC {float(summary_row['mean_test_auroc']):.3f}   Mean AUPRC {float(summary_row['mean_test_auprc']):.3f}",
-        fontsize=9,
-        color="#364152",
-        ha="left",
-        va="center",
-    )
-    ax.text(
-        0.04,
-        0.17,
-        f"Seed {int(run_row['seed'])}   Test acc {float(run_row['test_accuracy']):.3f}",
-        fontsize=9,
-        color="#364152",
-        ha="left",
-        va="center",
-    )
-
-
-def _render_curve(ax: plt.Axes, image_path: Path, row_label: str) -> None:
-    image = plt.imread(image_path)
-    ax.imshow(image)
-    ax.set_xticks([])
-    ax.set_yticks([])
-    for spine in ax.spines.values():
-        spine.set_visible(False)
-    ax.set_title(row_label, loc="left", fontsize=10, pad=6)
-
-
-def _is_nonblank_image(image_path: Path) -> bool:
-    image = Image.open(image_path).convert("L")
-    stddev = ImageStat.Stat(image).stddev[0]
-    return stddev > NONBLANK_STDDEV_THRESHOLD
-
-
-def _candidate_run_dirs(run_dir: Path) -> list[Path]:
-    siblings = sorted(path for path in run_dir.parent.glob("experiment_runs_*") if path.is_dir())
-    if run_dir not in siblings:
-        return [run_dir]
-    run_idx = siblings.index(run_dir)
-    candidates = [run_dir]
-    for offset in range(1, len(siblings)):
-        prev_idx = run_idx - offset
-        next_idx = run_idx + offset
-        if prev_idx >= 0:
-            candidates.append(siblings[prev_idx])
-        if next_idx < len(siblings):
-            candidates.append(siblings[next_idx])
-    return candidates
-
-
-def _candidate_seed_dirs(run_dir: Path, ablation_name: str, preferred_seed: int) -> list[Path]:
-    ablation_dir = run_dir / "runs" / ablation_name
-    if not ablation_dir.exists():
-        return []
-    seed_dirs = sorted(path for path in ablation_dir.glob("seed_*") if path.is_dir())
-    preferred_name = f"seed_{preferred_seed}"
-    preferred = [path for path in seed_dirs if path.name == preferred_name]
-    others = [path for path in seed_dirs if path.name != preferred_name]
-    return preferred + others
-
-
-def _resolve_curve_path(run_dir: Path, ablation_name: str, preferred_seed: int, curve_filename: str) -> Path:
-    for candidate_run_dir in _candidate_run_dirs(run_dir):
-        for seed_dir in _candidate_seed_dirs(candidate_run_dir, ablation_name, preferred_seed):
-            curve_path = seed_dir / curve_filename
-            if not curve_path.exists():
+def _mean_metric_by_ablation(run_dir: Path, ablation_names: list[str], metric_key: str) -> dict[str, float]:
+    """Average one metric across all available seed metrics files for each ablation."""
+    metrics_by_ablation: dict[str, list[float]] = {}
+    runs_dir = run_dir / "runs"
+    for ablation_name in ablation_names:
+        ablation_dir = runs_dir / ablation_name
+        if not ablation_dir.exists():
+            continue
+        metric_values: list[float] = []
+        for seed_dir in sorted(path for path in ablation_dir.glob("seed_*") if path.is_dir()):
+            metrics_path = seed_dir / "metrics.json"
+            if not metrics_path.exists():
                 continue
-            if _is_nonblank_image(curve_path):
-                return curve_path
-    raise FileNotFoundError(
-        f"Could not find a nonblank `{curve_filename}` for ablation `{ablation_name}` near run {run_dir}"
+            metric_values.append(float(json.loads(metrics_path.read_text())[metric_key]))
+        if metric_values:
+            metrics_by_ablation[ablation_name] = _mean(metric_values)
+    return metrics_by_ablation
+
+
+def _copy_png_and_csv_aliases(run_dir: Path, output_name: str, alias_name: str) -> None:
+    """Copy a rendered PNG and its CSV data to an alias stem."""
+    output_png = run_dir / output_name
+    output_csv = run_dir / output_name.replace(".png", ".csv")
+    alias_png = run_dir / alias_name
+    alias_csv = run_dir / alias_name.replace(".png", ".csv")
+    alias_png.write_bytes(output_png.read_bytes())
+    alias_csv.write_text(output_csv.read_text())
+
+
+def _render_hidden_curve_plot(
+    run_dir: Path,
+    hidden_curve_csv_name: str,
+    base_curve_csv_name: str,
+    output_name: str,
+    alias_name: str,
+    x_key: str,
+    y_key: str,
+    metric_key: str,
+    x_label: str,
+    y_label: str,
+    title: str,
+    baseline_line: tuple[list[float], list[float]] | None = None,
+) -> None:
+    """Render a hidden-width aggregate curve plot augmented with the no-hidden baseline."""
+    hidden_curve_df = pd.read_csv(run_dir / hidden_curve_csv_name)
+    base_curve_df = pd.read_csv(run_dir / base_curve_csv_name)
+    baseline_df = base_curve_df[base_curve_df["ablation_name"] == "ad_embedding"]
+    combined_df = pd.concat([baseline_df, hidden_curve_df], ignore_index=True)
+    combined_df = combined_df[combined_df["ablation_name"].isin(PREFERRED_ABLATION_ORDER)].copy()
+
+    metric_by_ablation = _mean_metric_by_ablation(run_dir, _ordered_ablations(PREFERRED_ABLATION_ORDER), metric_key)
+
+    plt.figure(figsize=(7, 6))
+    for ablation_name in _ordered_ablations(sorted(combined_df["ablation_name"].unique())):
+        ablation_df = combined_df[combined_df["ablation_name"] == ablation_name].sort_values(x_key)
+        metric_value = metric_by_ablation.get(ablation_name)
+        label = (
+            ablation_name
+            if metric_value is None
+            else f"{ablation_name} ({metric_key.replace('test_', '').upper()} {metric_value:.3f})"
+        )
+        plt.plot(ablation_df[x_key], ablation_df[y_key], linewidth=2, label=label)
+    if baseline_line is not None:
+        plt.plot(baseline_line[0], baseline_line[1], linestyle="--", color="#9A9A9A", linewidth=1)
+    plt.xlabel(x_label)
+    plt.ylabel(y_label)
+    plt.title(title)
+    plt.legend(loc="upper center", bbox_to_anchor=(0.5, -0.16), ncol=2, frameon=True)
+    plt.tight_layout(rect=(0, 0.08, 1, 1))
+    plt.savefig(run_dir / output_name, dpi=200)
+    plt.close()
+
+    combined_df.to_csv(run_dir / output_name.replace(".png", ".csv"), index=False)
+    _copy_png_and_csv_aliases(run_dir, output_name, alias_name)
+    print(f"Wrote: {run_dir / output_name}")
+    print(f"Wrote: {run_dir / alias_name}")
+
+
+def render_hidden_layer_baseline_plots(run_dir: Path) -> None:
+    """Write hidden-width mean ROC and PR plots that include `ad_embedding`."""
+    _render_hidden_curve_plot(
+        run_dir=run_dir,
+        hidden_curve_csv_name="hidden_only_mean_roc_by_ablation.csv",
+        base_curve_csv_name="mean_roc_by_ablation.csv",
+        output_name="hidden_only_mean_roc_by_ablation.png",
+        alias_name="hidden_only_mean_auroc_by_ablation.png",
+        x_key="fpr",
+        y_key="mean_tpr",
+        metric_key="test_auroc",
+        x_label="False Positive Rate",
+        y_label="True Positive Rate",
+        title="Mean ROC for Hidden-Width Ablations",
+        baseline_line=([0.0, 1.0], [0.0, 1.0]),
+    )
+    _render_hidden_curve_plot(
+        run_dir=run_dir,
+        hidden_curve_csv_name="hidden_only_mean_pr_by_ablation.csv",
+        base_curve_csv_name="mean_pr_by_ablation.csv",
+        output_name="hidden_only_mean_pr_by_ablation.png",
+        alias_name="hidden_only_mean_auprc_by_ablation.png",
+        x_key="recall",
+        y_key="mean_precision",
+        metric_key="test_auprc",
+        x_label="Recall",
+        y_label="Precision",
+        title="Mean Precision-Recall for Hidden-Width Ablations",
     )
 
 
-def render_dashboard(run_dir: Path, seed: int, output_path: Path, title: str) -> None:
-    summary_rows = _read_csv_rows(run_dir / "summary.csv")
-    summary_by_ablation_rows = _read_csv_rows(run_dir / "summary_by_ablation.csv")
-    sample_row = _sample_row(summary_rows, seed)
-    ordered_summary_rows = sorted(summary_by_ablation_rows, key=lambda row: float(row["mean_test_auprc"]), reverse=True)
-    ablation_names = [row["ablation_name"] for row in ordered_summary_rows]
+def render_real_embedding_loss_plot(run_dir: Path, output_path: Path) -> None:
+    """Render a train/test mean-loss plot for `ad_embedding` plus hidden-width runs."""
+    base_loss_path = run_dir / "mean_loss_by_ablation.csv"
+    hidden_loss_path = run_dir / "hidden_only_mean_loss_by_ablation.csv"
+    if not base_loss_path.exists():
+        raise FileNotFoundError(f"Required loss CSV not found: {base_loss_path}")
+    if not hidden_loss_path.exists():
+        raise FileNotFoundError(f"Required hidden-only loss CSV not found: {hidden_loss_path}")
 
-    num_cols = len(ablation_names)
-    if num_cols == 0:
-        raise ValueError("summary_by_ablation.csv is empty")
-
-    fig_width = max(16.0, num_cols * 4.2)
-    fig_height = 16.0
-    fig = plt.figure(figsize=(fig_width, fig_height), constrained_layout=True, facecolor="white")
-    grid = GridSpec(
-        nrows=6,
-        ncols=num_cols,
-        figure=fig,
-        height_ratios=[0.9, 0.9, 0.9, 3.0, 3.0, 3.0],
+    combined_df = pd.concat([pd.read_csv(base_loss_path), pd.read_csv(hidden_loss_path)], ignore_index=True)
+    combined_df = (
+        combined_df.groupby(["ablation_name", "split", "epoch"], as_index=False)["mean_loss"]
+        .mean()
+        .sort_values(["ablation_name", "split", "epoch"])
     )
-
-    subtitle = f"Run: {run_dir.as_posix()}   Generated: {_format_run_date(run_dir)}   Seed: {seed}"
-    _render_header(fig.add_subplot(grid[0, :]), title, subtitle, _build_scale_text(sample_row))
-    _render_metrics_row(fig.add_subplot(grid[1, :]), ordered_summary_rows, sample_row)
-
-    for col_idx, summary_row in enumerate(ordered_summary_rows):
-        ablation_name = summary_row["ablation_name"]
-        run_row = _ablation_run_row(summary_rows, ablation_name, seed)
-        _render_column_header(fig.add_subplot(grid[2, col_idx]), ablation_name, summary_row, run_row)
-
-        for row_offset, (curve_filename, row_label) in enumerate(CURVE_FILES, start=3):
-            curve_path = _resolve_curve_path(run_dir, ablation_name, seed, curve_filename)
-            _render_curve(fig.add_subplot(grid[row_offset, col_idx]), curve_path, row_label)
+    combined_df = combined_df[combined_df["ablation_name"].isin(PREFERRED_ABLATION_ORDER)].copy()
+    if combined_df.empty:
+        raise ValueError("No eligible ablations found for the real-embedding loss plot.")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=200, bbox_inches="tight")
+    combined_df.to_csv(output_path.with_suffix(".csv"), index=False)
+
+    fig, ax = plt.subplots(figsize=(14, 9))
+    ablation_handles: list[Line2D] = []
+    for ablation_name in _ordered_ablations(sorted(combined_df["ablation_name"].unique())):
+        ablation_df = combined_df[combined_df["ablation_name"] == ablation_name]
+        train_df = ablation_df[ablation_df["split"] == "train"]
+        test_df = ablation_df[ablation_df["split"] == "test"]
+
+        train_line = ax.plot(train_df["epoch"], train_df["mean_loss"], linewidth=2)[0]
+        ax.plot(test_df["epoch"], test_df["mean_loss"], linewidth=2, linestyle="--", color=train_line.get_color())
+        ablation_handles.append(Line2D([0], [0], color=train_line.get_color(), lw=2, label=ablation_name))
+
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Loss")
+    ax.set_title("Real-Embedding Loss by Ablation")
+    ablation_legend = ax.legend(
+        handles=ablation_handles,
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.14),
+        ncol=4,
+        frameon=True,
+        title="Ablation",
+    )
+    split_handles = [
+        Line2D([0], [0], color="#444444", lw=2, linestyle="-", label="train"),
+        Line2D([0], [0], color="#444444", lw=2, linestyle="--", label="test"),
+    ]
+    split_legend = ax.legend(
+        handles=split_handles,
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.35),
+        ncol=2,
+        frameon=True,
+        title="Split",
+    )
+    ax.add_artist(ablation_legend)
+    ax.add_artist(split_legend)
+    fig.tight_layout(rect=(0, 0.24, 1, 1))
+    fig.savefig(output_path, dpi=200)
     plt.close(fig)
     print(f"Wrote: {output_path}")
 
 
 def main() -> None:
+    """Generate the aggregate plots still consumed by the README and milestone report."""
     args = parse_args()
-    render_dashboard(
-        run_dir=args.run_dir,
-        seed=args.seed,
-        output_path=args.output_path,
-        title=args.title,
-    )
+    render_hidden_layer_baseline_plots(args.run_dir)
+    real_embedding_loss_output_path = args.real_embedding_loss_output_path
+    if real_embedding_loss_output_path is None:
+        real_embedding_loss_output_path = args.run_dir / DEFAULT_REAL_EMBEDDING_LOSS_NAME
+    render_real_embedding_loss_plot(args.run_dir, real_embedding_loss_output_path)
 
 
 if __name__ == "__main__":

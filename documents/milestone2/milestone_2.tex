@@ -122,22 +122,22 @@ Primary evaluation metrics include:
     \item Accuracy.
 \end{itemize}
 
-The sampled multiseed dashboard reported here comes from \texttt{results/ad\_predictor/experiment\_runs\_20260314\_235446}. This run contains 762 labeled samples total, with 254 AD positives and 508 matched controls, and reports 5-fold cross-validation averages over seeds 42 and 43.
+The sampled multiseed dashboard reported here is curated under \texttt{documents/readme/ad\_predictor/}. This run contains 762 labeled samples total, with 254 AD positives and 508 matched controls, and reports 5-fold cross-validation averages over seeds 42 through 51.
 
 \subsection*{6. Results}
-The weighted binary cross-entropy model is the best-performing ablation in the current run, with mean test AUROC $= 0.545$ and mean test AUPRC $= 0.391$. The unweighted real-embedding probe is weaker (AUROC $= 0.515$, AUPRC $= 0.350$), while the two null-style controls stay near chance: random embedding reaches AUPRC $= 0.354$ and label shuffle reaches AUPRC $= 0.338$.
+The weighted binary cross-entropy model is the best-performing ablation in the current run, with mean test AUROC $= 0.545$ and mean test AUPRC $= 0.391$. The unweighted real-embedding probe is weaker (AUROC $= 0.533$, AUPRC $= 0.374$), while the two null-style controls stay near chance: random embedding reaches AUPRC $= 0.347$ and label shuffle reaches AUPRC $= 0.352$.
 
 \begin{figure}[t]
     \centering
-    \includegraphics[width=0.48\linewidth]{../results/ad_predictor/experiment_runs_20260314_235446/mean_pr_by_ablation.png}
+    \includegraphics[width=0.48\linewidth]{../readme/ad_predictor/mean_auprc_by_ablation.png}
     \hfill
-    \includegraphics[width=0.48\linewidth]{../results/ad_predictor/experiment_runs_20260314_235446/mean_roc_by_ablation.png}
-    \caption{Mean precision-recall and ROC curves across ablations for the March 14, 2026 multiseed run. The precision-recall plot is the most informative view here because the positive prevalence is fixed at approximately one-third in the held-out matched-control test sets.}
+    \includegraphics[width=0.48\linewidth]{../readme/ad_predictor/mean_auroc_by_ablation.png}
+    \caption{Mean AUPRC and AUROC curves across ablations for the March 15, 2026 multiseed AD-predictor run. The AUPRC plot is the most informative view here because the positive prevalence is fixed at approximately one-third in the held-out matched-control test sets.}
 \end{figure}
 
 \begin{figure}[t]
     \centering
-    \includegraphics[width=0.7\linewidth]{../results/ad_predictor/experiment_runs_20260314_235446/mean_test_loss_by_ablation.png}
+    \includegraphics[width=0.7\linewidth]{../readme/ad_predictor/mean_test_loss_by_ablation.png}
     \caption{Mean test loss by ablation across the same multiseed run. The \texttt{ad\_embedding} curve is visibly lower than \texttt{random\_embedding}, but only slightly lower than \texttt{label\_shuffle}.}
 \end{figure}
 
