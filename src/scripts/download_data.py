@@ -15,6 +15,9 @@ the LOI pipeline end-to-end.
 from __future__ import annotations
 
 import zipfile
+import gzip
+import shutil
+import pandas as pd
 from pathlib import Path
 from urllib.request import urlopen
 from urllib.parse import urlparse, unquote
@@ -22,6 +25,10 @@ from collections import namedtuple
 
 DOWNLOAD_DIR = Path("data/download")
 RAW_DIR = Path("data/raw")
+PROCESSED_DIR = Path("data/processed")
+AD_GENES_FILENAME = "ad_genes.csv"
+AD_SUPPLEMENT_FILENAME = "41467_2023_40208_MOESM4_ESM.xlsx"
+AD_SUPPLEMENT_SHEET = "Supplementary Data 2"
 
 Dataset = namedtuple("Dataset", ["name", "urls"])
 DATASETS: list[Dataset] = [
@@ -81,11 +88,21 @@ def download(url: str, dest_dir: Path) -> str:
     return filename
 
 
-def extract(zip_path: Path, out_dir: Path) -> None:
-    """Extract a zip archive into the target output directory."""
+def extract(archive_path: Path, out_dir: Path) -> None:
+    """Extract a supported archive into the target output directory."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        zf.extractall(out_dir)
+    if archive_path.suffix == ".zip":
+        with zipfile.ZipFile(archive_path, "r") as zf:
+            zf.extractall(out_dir)
+        return
+
+    if archive_path.suffix == ".gz":
+        output_path = out_dir / archive_path.with_suffix("").name
+        with gzip.open(archive_path, "rb") as src, open(output_path, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+        return
+
+    raise ValueError(f"Unsupported archive type: {archive_path}")
 
 
 def symlink(dataset_name: str, filename: str) -> None:
@@ -99,6 +116,26 @@ def symlink(dataset_name: str, filename: str) -> None:
     target_path.symlink_to(source_path)
 
 
+def generate_ad_genes_csv() -> None:
+    """Generate data/processed/ad_genes.csv from the AD protein supplement workbook."""
+    supplement_path = DOWNLOAD_DIR / AD_SUPPLEMENT_FILENAME
+    if not supplement_path.is_file():
+        raise FileNotFoundError(f"Missing AD supplement workbook: {supplement_path}")
+
+    df = pd.read_excel(supplement_path, sheet_name=AD_SUPPLEMENT_SHEET, usecols=["Gene"])
+    gene_symbols: list[str] = []
+    for value in df["Gene"].dropna():
+        for gene_symbol in str(value).split(";"):
+            normalized = gene_symbol.strip().upper()
+            if normalized:
+                gene_symbols.append(normalized)
+
+    out_df = pd.DataFrame({"gene_symbol": sorted(set(gene_symbols))})
+    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+    out_df.to_csv(PROCESSED_DIR / AD_GENES_FILENAME, index=False)
+    print(f"Wrote {PROCESSED_DIR / AD_GENES_FILENAME} from {AD_SUPPLEMENT_FILENAME} [{AD_SUPPLEMENT_SHEET}]")
+
+
 def main() -> None:
     """Download datasets and either extract archives or symlink plain files."""
     for dataset_name, urls in DATASETS:
@@ -107,10 +144,12 @@ def main() -> None:
 
             filename = download(url, DOWNLOAD_DIR)
 
-            if filename.endswith("zip"):
+            if filename.endswith((".zip", ".gz")):
                 extract(DOWNLOAD_DIR / filename, RAW_DIR / dataset_name)
             else:
                 symlink(dataset_name, filename)
+
+    generate_ad_genes_csv()
 
 
 if __name__ == "__main__":

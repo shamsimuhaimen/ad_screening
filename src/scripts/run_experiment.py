@@ -363,6 +363,24 @@ def _plot_grouped_aggregates(
 
 
 def _write_debug_plots(rows: list[dict[str, object]], root_dir: Path) -> None:
+    loss_min = float("inf")
+    loss_max = float("-inf")
+    for row in rows:
+        run_dir = _run_dir(root_dir, str(row["ablation_name"]), int(row["seed"]))
+        loss_df = pd.read_csv(run_dir / "loss_history.csv")
+        loss_min = min(loss_min, float(loss_df["train_loss"].min()), float(loss_df["test_loss"].min()))
+        loss_max = max(loss_max, float(loss_df["train_loss"].max()), float(loss_df["test_loss"].max()))
+
+    if loss_min == float("inf") or loss_max == float("-inf"):
+        loss_min, loss_max = 0.0, 1.0
+    elif loss_min == loss_max:
+        loss_min -= 0.05
+        loss_max += 0.05
+    else:
+        pad = 0.03 * (loss_max - loss_min)
+        loss_min -= pad
+        loss_max += pad
+
     for row in rows:
         ablation_name = str(row["ablation_name"])
         seed = int(row["seed"])
@@ -374,6 +392,8 @@ def _write_debug_plots(rows: list[dict[str, object]], root_dir: Path) -> None:
         plt.plot([0.0, 1.0], [0.0, 1.0], linestyle="--", color="#9A9A9A", linewidth=1)
         plt.xlabel("False Positive Rate")
         plt.ylabel("True Positive Rate")
+        plt.xlim(0.0, 1.0)
+        plt.ylim(0.0, 1.0)
         plt.title("ROC Curve")
         plt.legend(loc="lower right")
         plt.tight_layout()
@@ -385,6 +405,8 @@ def _write_debug_plots(rows: list[dict[str, object]], root_dir: Path) -> None:
         plt.plot(pr_df["recall"], pr_df["precision"], color="#54A24B", label=f"AUPRC = {float(row['test_auprc']):.3f}")
         plt.xlabel("Recall")
         plt.ylabel("Precision")
+        plt.xlim(0.0, 1.0)
+        plt.ylim(0.0, 1.0)
         plt.title("Precision-Recall Curve")
         plt.legend(loc="lower left")
         plt.tight_layout()
@@ -397,6 +419,8 @@ def _write_debug_plots(rows: list[dict[str, object]], root_dir: Path) -> None:
         plt.plot(loss_df["epoch"], loss_df["test_loss"], label="test_loss")
         plt.xlabel("Epoch")
         plt.ylabel("Loss")
+        plt.xlim(float(loss_df["epoch"].min()), float(loss_df["epoch"].max()))
+        plt.ylim(loss_min, loss_max)
         plt.title("Training Curves")
         plt.legend()
         plt.tight_layout()

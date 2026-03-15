@@ -1,11 +1,11 @@
 # Brain-region–aware, BBB-conditioned virtual screening for Alzheimer’s disease
 
 ## Sample Results Dashboard
-The experiment runner writes per-run ROC, precision-recall, and loss curves for each ablation. Below is a sampled dashboard from `results/ad_predictor/experiment_runs_20260314_235446` generated on March 14, 2026 (UTC), using `seed_42` for each ablation.
+The experiment runner writes per-run ROC, precision-recall, and loss curves for each ablation. Below is a dashboard showing the latest curated results for AD prediction on the Allen human brain bulk RNA-seq dataset, trained on DrugCLIP protein embeddings with matched AD/control labels and summarized across the ablation sweep. The README figures are sourced from manually curated golden files under `documents/readme/ad_predictor/`.
 
-Experiment scale from [`results/ad_predictor/experiment_runs_20260314_235446/summary.csv`](results/ad_predictor/experiment_runs_20260314_235446/summary.csv): `762` total labeled protein samples, with `254` positives and `508` negatives. The reported metrics come from `5`-fold cross-validation, with an average split size of `609.6` train and `152.4` test samples per fold.
+Experiment scale from [`documents/readme/ad_predictor/summary.csv`](documents/readme/ad_predictor/summary.csv): `762` total labeled protein samples, with `254` positives and `508` negatives. These labels are constructed by combining the Allen human brain bulk RNA-seq dataset with the curated AD gene list in [`data/processed/ad_genes.csv`](data/processed/ad_genes.csv), then selecting expression-matched controls at a ratio of two controls per AD gene. The reported metrics come from `5`-fold cross-validation, with an average split size of `609.6` train and `152.4` test samples per fold.
 
-Summary from [`results/ad_predictor/experiment_runs_20260314_235446/summary_by_ablation.csv`](results/ad_predictor/experiment_runs_20260314_235446/summary_by_ablation.csv):
+Summary from [`documents/readme/ad_predictor/summary_by_ablation.csv`](documents/readme/ad_predictor/summary_by_ablation.csv):
 
 | Ablation | Mean test AUROC | Mean test AUPRC | Samples |
 | --- | ---: | ---: | ---: |
@@ -14,13 +14,17 @@ Summary from [`results/ad_predictor/experiment_runs_20260314_235446/summary_by_a
 | `ad_embedding` | 0.515 | 0.350 | 762 |
 | `label_shuffle` | 0.483 | 0.338 | 762 |
 
-| `weighted_bce` | `random_embedding` | `ad_embedding` | `label_shuffle` |
-| --- | --- | --- | --- |
-| ![weighted_bce ROC](docs/readme_assets/ad_predictor_20260314/weighted_bce_roc_seed42.png) | ![random_embedding ROC](docs/readme_assets/ad_predictor_20260314/random_embedding_roc_seed42.png) | ![ad_embedding ROC](docs/readme_assets/ad_predictor_20260314/ad_embedding_roc_seed42.png) | ![label_shuffle ROC](docs/readme_assets/ad_predictor_20260314/label_shuffle_roc_seed42.png) |
-| ![weighted_bce PR](docs/readme_assets/ad_predictor_20260314/weighted_bce_pr_seed42.png) | ![random_embedding PR](docs/readme_assets/ad_predictor_20260314/random_embedding_pr_seed42.png) | ![ad_embedding PR](docs/readme_assets/ad_predictor_20260314/ad_embedding_pr_seed42.png) | ![label_shuffle PR](docs/readme_assets/ad_predictor_20260314/label_shuffle_pr_seed42.png) |
-| ![weighted_bce loss](docs/readme_assets/ad_predictor_20260314/weighted_bce_loss_seed42.png) | ![random_embedding loss](docs/readme_assets/ad_predictor_20260314/random_embedding_loss_seed42.png) | ![ad_embedding loss](docs/readme_assets/ad_predictor_20260314/ad_embedding_loss_seed42.png) | ![label_shuffle loss](docs/readme_assets/ad_predictor_20260314/label_shuffle_loss_seed42.png) |
+Abbreviated meaning of each ablation:
+- `ad_embedding`: linear probe trained on the real DrugCLIP protein embeddings with standard binary cross-entropy.
+- `weighted_bce`: same real-embedding probe, but with weighted binary cross-entropy to upweight the AD class based on the training-fold class ratio.
+- `random_embedding`: control where the embedding vectors are replaced with Gaussian noise before training.
+- `label_shuffle`: control where the training labels are permuted within each fold while the held-out test labels remain real.
 
-This gives a quick visual comparison between the weighted-loss variant, the learned AD embedding, and the two controls. To regenerate a similar dashboard, rerun the experiment and point the image links at the newest timestamped directory under `results/ad_predictor/`.
+| Mean ROC | Mean PR | Mean loss |
+| --- | --- | --- |
+| ![Mean ROC by ablation](documents/readme/ad_predictor/mean_roc_by_ablation.png) | ![Mean PR by ablation](documents/readme/ad_predictor/mean_pr_by_ablation.png) | ![Mean loss by ablation](documents/readme/ad_predictor/mean_loss_by_ablation.png) |
+
+This gives a quick visual comparison of the aggregate ROC, precision-recall, and train/test loss behavior across ablations. Golden README artifacts should be updated manually in `documents/readme/ad_predictor/` when you want to refresh the dashboard.
 
 ## Setup
 - Create the env: `conda env create -f environment.yml`
@@ -32,6 +36,27 @@ After modifying deps in `environment.yml`,  sync env with: `conda env update -n 
 
 ## Data
 Download and extract all datasets: `python src/scripts/download_data.py`
+
+---
+
+### Dataset: AD Gene Compilation
+The current AD-positive label set is sourced from the curated AD protein supplement workbook [`data/download/41467_2023_40208_MOESM4_ESM.xlsx`](data/download/41467_2023_40208_MOESM4_ESM.xlsx), using `Supplementary Data 2` as the upstream source table.
+
+The local processing step is intentionally simple:
+- read the `Gene` column
+- split semicolon-delimited multi-gene entries into one gene per row
+- normalize symbols to uppercase
+- deduplicate
+- write the result to [`data/processed/ad_genes.csv`](data/processed/ad_genes.csv)
+
+This makes the existing dataset valid as a reproducible operational AD gene list for the current probing experiments: the curation is inherited from the external supplement, while this repo only performs normalization and expansion into a machine-usable format.
+
+We plan to extend this compilation in future iterations with additional evidence sources such as GWAS-based AD gene sets, rather than treating the current supplement as the final or exhaustive definition of AD-associated genes.
+
+---
+
+### Dataset: GWAS
+TODO
 
 ## Run Experiments
 The main entrypoint is [`src/scripts/run_experiment.py`](src/scripts/run_experiment.py).
