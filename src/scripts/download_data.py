@@ -55,6 +55,7 @@ DATASETS: list[Dataset] = [
             "https://huggingface.co/datasets/THU-ATOM/DrugCLIP_data/resolve/main/benchmark_throughput/dtwg_af_embeddings.npy",
             "https://huggingface.co/datasets/THU-ATOM/DrugCLIP_data/resolve/main/benchmark_throughput/dtwg_af_names_.npy",
             "https://huggingface.co/datasets/THU-ATOM/DrugCLIP_data/resolve/main/targets.zip",
+            "https://huggingface.co/datasets/THU-ATOM/DrugCLIP_data/resolve/main/encoded_mol_embs.zip",
         },
     ),
     Dataset(
