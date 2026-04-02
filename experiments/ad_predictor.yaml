@@ -37,6 +37,18 @@ ablations:
     Train on the real DrugCLIP embeddings with weighted binary cross-entropy,
     using the training-fold class ratio to upweight the AD class.
 
+- name: pocket_level_mean
+  pocket_level: true
+  aggregation_mode: mean
+  description: Average probabilities across all ~16 pockets per gene.
+
+- name: pocket_level_max
+  pocket_level: true
+  aggregation_mode: max
+  description: >
+    Take the highest probability among all pockets. This tests if a single 
+    "smoking gun" binding site drives the AD association.
+
 # - name: embedding_hidden_4
 #   hidden_dim: 4
 #   description: Train on the real DrugCLIP embeddings with a 4-unit hidden layer.
