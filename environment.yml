@@ -15,3 +15,4 @@ dependencies:
   - pyyaml
   - scikit-learn
   - attrs
+  - rdkit
