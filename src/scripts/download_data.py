@@ -123,7 +123,13 @@ def generate_ad_genes_csv() -> None:
     if not supplement_path.is_file():
         raise FileNotFoundError(f"Missing AD supplement workbook: {supplement_path}")
 
-    df = pd.read_excel(supplement_path, sheet_name=AD_SUPPLEMENT_SHEET, usecols=["Gene"])
+    # Load consistency columns along with the Gene names
+    df = pd.read_excel(
+        supplement_path, sheet_name=AD_SUPPLEMENT_SHEET, usecols=["Gene", "Increased in AD", "Decreased in AD"]
+    )
+
+    # Only keep rows where the protein is consistently Increased OR Decreased
+    df = df[(df["Increased in AD"] == True) | (df["Decreased in AD"] == True)].copy()
     gene_symbols: list[str] = []
     for value in df["Gene"].dropna():
         for gene_symbol in str(value).split(";"):
@@ -139,16 +145,16 @@ def generate_ad_genes_csv() -> None:
 
 def main() -> None:
     """Download datasets and either extract archives or symlink plain files."""
-    for dataset_name, urls in DATASETS:
-        for url in sorted(urls):
-            print(f"Downloading {dataset_name}: {url}")
+    # for dataset_name, urls in DATASETS:
+    #     for url in sorted(urls):
+    #         print(f"Downloading {dataset_name}: {url}")
 
-            filename = download(url, DOWNLOAD_DIR)
+    #         filename = download(url, DOWNLOAD_DIR)
 
-            if filename.endswith((".zip", ".gz")):
-                extract(DOWNLOAD_DIR / filename, RAW_DIR / dataset_name)
-            else:
-                symlink(dataset_name, filename)
+    #         if filename.endswith((".zip", ".gz")):
+    #             extract(DOWNLOAD_DIR / filename, RAW_DIR / dataset_name)
+    #         else:
+    #             symlink(dataset_name, filename)
 
     generate_ad_genes_csv()
 

@@ -9,6 +9,18 @@ import numpy as np
 import pandas as pd
 from attrs import asdict, frozen
 from sklearn.model_selection import StratifiedKFold
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
+
+try:
+    import umap
+except ImportError:
+    umap = None
 
 
 PATH_ARG_KEYS = {
@@ -40,6 +52,8 @@ class ADPredictorConfig:
     loss_selection: str
     label_shuffle: bool
     random_embeddings: bool
+    pocket_level: bool = False
+    aggregation_mode: str = "mean"  # Options: "mean", "max"
     debug_plots: bool = False
 
 
@@ -416,15 +430,9 @@ def plot_dimensionality_reduction(x: np.ndarray, y: np.ndarray, output_dir: Path
     # 1. Standardize the data
     x_scaled = StandardScaler().fit_transform(x)
     labels = np.where(y == 1, "AD", "Control")
-    palette = {"AD": "#FF0000", "Control": "#ACE5FF"}
+    palette = {"AD": "#E64B35", "Control": "#4DBBD5"}
 
-    # --- NEW: Explicitly sort to force drawing order ---
-    # We want 'AD' (1) to be at the end so they are drawn last (on top)
-    sort_idx = np.argsort(y)
-    x_scaled = x_scaled[sort_idx]
-    labels = labels[sort_idx]
-    # --------------------------------------------------
-
+    # Create a Figure object directly (avoids global plt state)
     fig = Figure(figsize=(16, 7))
     # Add axes to the figure
     ax_pca = fig.add_subplot(1, 2, 1)
@@ -436,18 +444,8 @@ def plot_dimensionality_reduction(x: np.ndarray, y: np.ndarray, output_dir: Path
     x_pca = pca.fit_transform(x_scaled)
     var_exp = pca.explained_variance_ratio_
 
-    hue_order = ["Control", "AD"]
-
     sns.scatterplot(
-        x=x_pca[:, 0],
-        y=x_pca[:, 1],
-        hue=labels,
-        hue_order=["Control", "AD"],  # Keep this for legend consistency
-        ax=ax_pca,
-        palette=palette,
-        alpha=0.6,
-        s=40,
-        edgecolor="none",
+        x=x_pca[:, 0], y=x_pca[:, 1], hue=labels, ax=ax_pca, palette=palette, alpha=0.6, s=40, edgecolor="none"
     )
     ax_pca.set_title(f"PCA: {sum(var_exp):.1%} Var Expl. {title_suffix}")
     ax_pca.set_xlabel("PC1")
@@ -531,6 +529,21 @@ def run_single(config: ADPredictorConfig, output_dir: Path) -> dict[str, float |
     y = gene_df["y"].to_numpy(dtype=np.float64)
     print(f"      aggregated to one embedding per gene: {len(gene_df)} genes")
 
+    # --- NEW DEBUG CODE ---
+    if config.debug_plots:
+        print("[DEBUG] Analyzing pocket embedding coherence...")
+        coherence_df = compute_pocket_coherence(merged, embeddings)
+        coherence_df.to_csv(output_dir / "pocket_coherence.csv", index=False)
+        print(f"      Overall dataset mean coherence: {coherence_df['mean_internal_sim'].mean():.4f}")
+
+        # Optional: Log genes with very low coherence (potential "blurring" victims)
+        low_coh = coherence_df.nsmallest(5, "mean_internal_sim")
+        print(f"      Genes with lowest pocket similarity: {low_coh['gene_symbol'].tolist()}")
+
+        print("[DEBUG] Generating dimensionality reduction plots...")
+        plot_dimensionality_reduction(x, y, output_dir, title_suffix="(Gene-Level)")
+    # --- END DEBUG CODE ---
+
     print("[5/7] Preparing stratified k-fold CV...")
     print(
         "      training modifiers: "
@@ -563,10 +576,18 @@ def run_single(config: ADPredictorConfig, output_dir: Path) -> dict[str, float |
         train_genes = select_fold_examples(gene_df.iloc[train_idx].copy(), config.controls_per_ad)
         test_genes = select_fold_examples(gene_df.iloc[test_idx].copy(), config.controls_per_ad)
 
-        x_train = np.vstack([x[int(idx)] for idx in train_genes.index])
-        y_train = train_genes["y"].to_numpy(dtype=np.float64)
-        x_test = np.vstack([x[int(idx)] for idx in test_genes.index])
-        y_test = test_genes["y"].to_numpy(dtype=np.float64)
+        if config.pocket_level:
+            train_pockets = merged[merged["gene_symbol"].isin(train_genes["gene_symbol"])]
+            test_pockets = merged[merged["gene_symbol"].isin(test_genes["gene_symbol"])]
+            x_train = embeddings[train_pockets["row_idx"].values.astype(int)]
+            y_train = train_pockets["y"].to_numpy(dtype=np.float64)
+            x_test = embeddings[test_pockets["row_idx"].values.astype(int)]
+            y_test = test_pockets["y"].to_numpy(dtype=np.float64)  # Renamed from y_test_raw
+        else:
+            x_train = np.vstack([x[int(idx)] for idx in train_genes.index])
+            y_train = train_genes["y"].to_numpy(dtype=np.float64)
+            x_test = np.vstack([x[int(idx)] for idx in test_genes.index])
+            y_test = test_genes["y"].to_numpy(dtype=np.float64)
 
         if config.label_shuffle:
             y_train = rng.permutation(y_train)
@@ -597,7 +618,28 @@ def run_single(config: ADPredictorConfig, output_dir: Path) -> dict[str, float |
         )
 
         _, _, train_probs = ffn_forward(x_train, model)
-        _, _, test_probs = ffn_forward(x_test, model)
+        _, _, test_probs_raw = ffn_forward(x_test, model)
+
+        if config.pocket_level:
+            # Group pocket-level probabilities by gene and take the mean
+            eval_df = pd.DataFrame(
+                {
+                    "gene_symbol": test_pockets["gene_symbol"],
+                    "y_prob": test_probs_raw,
+                    "y_true": y_test,  # Now correctly references the local variable
+                }
+            )
+            gene_eval = eval_df.groupby("gene_symbol").agg({"y_prob": config.aggregation_mode, "y_true": "first"})
+
+            # Re-align with test_genes metadata for consistency
+            fold_pred_df = test_genes[["gene_symbol", "uniprot_accession", "label", "integrated_score"]].copy()
+            fold_pred_df = fold_pred_df.merge(gene_eval, on="gene_symbol", how="left")
+            test_probs = fold_pred_df["y_prob"].values
+            y_test = fold_pred_df["y_true"].values  # Overwrites pocket labels with gene labels for final metrics
+        else:
+            test_probs = test_probs_raw
+            fold_pred_df = test_genes[["gene_symbol", "uniprot_accession", "label", "integrated_score"]].copy()
+
         test_pred = (test_probs >= 0.5).astype(int)
         train_acc = float((((train_probs >= 0.5).astype(int)) == y_train).mean())
         test_acc = float((test_pred == y_test).mean())
@@ -627,7 +669,6 @@ def run_single(config: ADPredictorConfig, output_dir: Path) -> dict[str, float |
         test_sizes.append(int(len(test_genes)))
         pos_weights.append(pos_weight)
         neg_weights.append(neg_weight)
-        fold_pred_df = test_genes[["gene_symbol", "uniprot_accession", "label", "integrated_score"]].copy()
         fold_pred_df["fold"] = int(fold_idx)
         fold_pred_df["y_true"] = y_test.astype(int)
         fold_pred_df["y_prob"] = test_probs
