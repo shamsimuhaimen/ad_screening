@@ -145,16 +145,16 @@ def generate_ad_genes_csv() -> None:
 
 def main() -> None:
     """Download datasets and either extract archives or symlink plain files."""
-    # for dataset_name, urls in DATASETS:
-    #     for url in sorted(urls):
-    #         print(f"Downloading {dataset_name}: {url}")
+    for dataset_name, urls in DATASETS:
+        for url in sorted(urls):
+            print(f"Downloading {dataset_name}: {url}")
 
-    #         filename = download(url, DOWNLOAD_DIR)
+            filename = download(url, DOWNLOAD_DIR)
 
-    #         if filename.endswith((".zip", ".gz")):
-    #             extract(DOWNLOAD_DIR / filename, RAW_DIR / dataset_name)
-    #         else:
-    #             symlink(dataset_name, filename)
+            if filename.endswith((".zip", ".gz")):
+                extract(DOWNLOAD_DIR / filename, RAW_DIR / dataset_name)
+            else:
+                symlink(dataset_name, filename)
 
     generate_ad_genes_csv()
 
