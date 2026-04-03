@@ -377,6 +377,104 @@ def stratified_kfold_indices(y: np.ndarray, num_folds: int, seed: int) -> list[t
     return [(train_idx, test_idx) for train_idx, test_idx in splitter.split(x_dummy, y_int)]
 
 
+def compute_pocket_coherence(merged_df: pd.DataFrame, embeddings: np.ndarray) -> pd.DataFrame:
+    """Calculates internal cosine similarity for pockets within each gene."""
+    results = []
+    # Use the row indices mapped during Step 4
+    for gene, group in merged_df.groupby("gene_symbol"):
+        row_indices = group["row_idx"].values.astype(int)
+
+        if len(row_indices) < 2:
+            continue
+
+        # Extract and normalize vectors for cosine similarity
+        vectors = embeddings[row_indices]
+        norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+        norm_vectors = vectors / np.maximum(norms, 1e-12)
+
+        # Compute pairwise similarity
+        sim_matrix = norm_vectors @ norm_vectors.T
+
+        # Calculate mean similarity excluding the self-similarity diagonal
+        mask = ~np.eye(sim_matrix.shape[0], dtype=bool)
+        results.append(
+            {
+                "gene_symbol": gene,
+                "n_pockets": len(row_indices),
+                "mean_internal_sim": float(sim_matrix[mask].mean()),
+                "std_internal_sim": float(sim_matrix[mask].std()),
+            }
+        )
+    return pd.DataFrame(results)
+
+
+from matplotlib.figure import Figure
+
+
+def plot_dimensionality_reduction(x: np.ndarray, y: np.ndarray, output_dir: Path, title_suffix: str = ""):
+    """Generates PCA and UMAP plots using a thread-safe Object-Oriented interface."""
+    # 1. Standardize the data
+    x_scaled = StandardScaler().fit_transform(x)
+    labels = np.where(y == 1, "AD", "Control")
+    palette = {"AD": "#FF0000", "Control": "#ACE5FF"}
+
+    # --- NEW: Explicitly sort to force drawing order ---
+    # We want 'AD' (1) to be at the end so they are drawn last (on top)
+    sort_idx = np.argsort(y)
+    x_scaled = x_scaled[sort_idx]
+    labels = labels[sort_idx]
+    # --------------------------------------------------
+
+    fig = Figure(figsize=(16, 7))
+    # Add axes to the figure
+    ax_pca = fig.add_subplot(1, 2, 1)
+    ax_umap = fig.add_subplot(1, 2, 2)
+
+    # 2. PCA
+    print(f"      [DEBUG] Running PCA...")
+    pca = PCA(n_components=2)
+    x_pca = pca.fit_transform(x_scaled)
+    var_exp = pca.explained_variance_ratio_
+
+    hue_order = ["Control", "AD"]
+
+    sns.scatterplot(
+        x=x_pca[:, 0],
+        y=x_pca[:, 1],
+        hue=labels,
+        hue_order=["Control", "AD"],  # Keep this for legend consistency
+        ax=ax_pca,
+        palette=palette,
+        alpha=0.6,
+        s=40,
+        edgecolor="none",
+    )
+    ax_pca.set_title(f"PCA: {sum(var_exp):.1%} Var Expl. {title_suffix}")
+    ax_pca.set_xlabel("PC1")
+    ax_pca.set_ylabel("PC2")
+
+    # 3. UMAP
+    if umap is not None:
+        print(f"      [DEBUG] Running UMAP...")
+        # Note: UMAP is usually stable in threads, but we fix random_state for consistency
+        reducer = umap.UMAP(n_neighbors=15, min_dist=0.1, metric="cosine", random_state=42)
+        x_umap = reducer.fit_transform(x_scaled)
+
+        sns.scatterplot(
+            x=x_umap[:, 0], y=x_umap[:, 1], hue=labels, ax=ax_umap, palette=palette, alpha=0.6, s=40, edgecolor="none"
+        )
+        ax_umap.set_title(f"UMAP: Cosine Metric {title_suffix}")
+        ax_umap.set_xlabel("UMAP 1")
+        ax_umap.set_ylabel("UMAP 2")
+    else:
+        ax_umap.text(0.5, 0.5, "umap-learn not installed", ha="center")
+
+    fig.tight_layout()
+    # Save using the figure object directly
+    fig.savefig(output_dir / "embedding_projections.png", dpi=200)
+    print(f"      [DEBUG] Saved projections to {output_dir / 'embedding_projections.png'}")
+
+
 def run_single(config: ADPredictorConfig, output_dir: Path) -> dict[str, float | int | str]:
     output_dir.mkdir(parents=True, exist_ok=True)
     if config.label_shuffle and config.random_embeddings:
