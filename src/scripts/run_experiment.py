@@ -206,7 +206,19 @@ def _plot_mean_roc_by_ablation(
         mean_curve = np.mean(np.vstack(curves), axis=0)
         for x_value, y_value in zip(grid, mean_curve):
             curve_rows.append({"ablation_name": ablation_name, "fpr": float(x_value), "mean_tpr": float(y_value)})
-        plt.plot(grid, mean_curve, linewidth=2, label=f"{ablation_name} (AUROC {float(row['mean_test_auroc']):.3f})")
+        # Determine transparency: 1.0 for weighted_bce, 0.2 for others
+        alpha_val = 1.0 if ablation_name == "weighted_bce" else 0.2
+        # Ensure weighted_bce is drawn on top by setting zorder
+        z_order = 10 if ablation_name == "weighted_bce" else 1
+
+        plt.plot(
+            grid,
+            mean_curve,
+            linewidth=2,
+            alpha=alpha_val,
+            zorder=z_order,
+            label=f"{ablation_name} (AUROC {float(row['mean_test_auroc']):.3f})",
+        )
     plt.plot([0.0, 1.0], [0.0, 1.0], linestyle="--", color="#9A9A9A", linewidth=1)
     plt.xlabel("False Positive Rate")
     plt.ylabel("True Positive Rate")
